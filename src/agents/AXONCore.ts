@@ -2,16 +2,18 @@
  * AXONCore — central router for the AXON agent system.
  *
  * Flow:
- *   Input (transcript | command | system_trigger)
- *     → classifyIntent()      — conversation | task_creation | execution_request | research_query
- *     → route to agent        — ConversationAgent | TaskAgent | ExecutionAgent | ResearchAgent
- *     → onAgentResult()       — episodic storage + feedback loop + follow-on agents
+ *   Input (transcript | command | system_trigger | agent_feedback)
+ *     → maybeCreateGoal()    — detects long-term intent, persists a Goal record
+ *     → classifyIntent()     — conversation | task_creation | execution_request | research_query
+ *     → route to agent       — ExecutionAgent | ResearchAgent | TaskAgent | ConversationAgent
+ *     → onAgentResult()      — episodic storage + goal progress + follow-on TaskAgent
  */
 
-import { Input, InputType, Agent, AgentResult } from './types.js'
+import { Input, InputType, Agent, AgentResult, StepResult } from './types.js'
 import { storeEpisode } from '../pipeline/epsodic.js'
 
-// Agents are lazy-loaded to prevent circular imports at module init.
+// ── Agent chain (lazy-loaded to prevent circular deps) ───────────────────────
+
 let _agents: Agent[] | null = null
 
 async function getAgentChain(): Promise<Agent[]> {
@@ -27,12 +29,11 @@ async function getAgentChain(): Promise<Agent[]> {
     import('./ExecutionAgent.js'),
     import('./ResearchAgent.js'),
   ])
-  // Priority order: execution → research → task → conversation (conversation is fallback)
   _agents = [
     new ExecutionAgent(),
     new ResearchAgent(),
     new TaskAgent(),
-    new ConversationAgent(),
+    new ConversationAgent(),   // catch-all
   ]
   return _agents
 }
@@ -54,7 +55,28 @@ export function classifyIntent(raw: string): InputType {
   return 'conversation'
 }
 
-// ── Feedback loop ────────────────────────────────────────────────────────────
+// ── Goal creation trigger ────────────────────────────────────────────────────
+// Detects long-form intent from human input and persists a Goal automatically.
+// Only fires on human-sourced input — not on system triggers or agent feedback.
+
+const RE_GOAL_CREATE = /\b(i want to|we should|our goal is|the goal is|i'm trying to|we need to build|let's build|i'm going to|we're going to)\b/i
+
+async function maybeCreateGoal(input: Input): Promise<void> {
+  if (input.source === 'system_trigger' || input.source === 'agent_feedback') return
+  if (!RE_GOAL_CREATE.test(input.raw)) return
+
+  try {
+    const { createGoal } = await import('../autonomy/goals.js')
+    createGoal(
+      input.raw.slice(0, 200),
+      'medium'
+    )
+  } catch (err) {
+    console.error('[AXON] maybeCreateGoal failed:', err)
+  }
+}
+
+// ── Feedback handlers ────────────────────────────────────────────────────────
 
 type FeedbackHandler = (result: AgentResult) => void
 const feedbackHandlers: FeedbackHandler[] = []
@@ -64,7 +86,7 @@ export function onAXONFeedback(handler: FeedbackHandler): void {
 }
 
 async function onAgentResult(result: AgentResult, input: Input): Promise<void> {
-  // Persist to episodic memory
+  // 1. Episodic memory
   if (result.success && result.output) {
     storeEpisode(
       `[AXON/${input.type}] "${input.raw.slice(0, 200)}" → ${result.output.slice(0, 200)}`,
@@ -72,24 +94,52 @@ async function onAgentResult(result: AgentResult, input: Input): Promise<void> {
     ).catch(console.error)
   }
 
-  // Notify subscribers
+  // 2. Subscriber callbacks
   for (const h of feedbackHandlers) {
     try { h(result) } catch {}
   }
 
-  // Execution feedback loop: spawn a TaskAgent to track follow-ups
-  if (result.agentId === 'execution' && result.success && result.data) {
-    const { TaskAgent } = await import('./TaskAgent.js')
-    const taskAgent = new TaskAgent()
-    const followOn: Input = {
-      raw: `execution completed: ${result.output ?? ''}`,
-      type: 'task_creation',
-      source: 'agent_feedback',
-      ts: Date.now(),
-      metadata: { executionResult: result.data, originalGoal: input.raw },
+  if (result.agentId !== 'execution') return
+
+  // 3. Goal progress update
+  const goalId = input.metadata?.goalId as string | undefined
+  if (goalId && result.success) {
+    try {
+      const { recordGoalActivity, getGoal } = await import('../autonomy/goals.js')
+      const goal = getGoal(goalId)
+      if (goal) {
+        const steps       = ((result.data as { steps?: StepResult[] })?.steps ?? []) as StepResult[]
+        const succeeded   = steps.filter(s => s.success).length
+        const total       = steps.length
+        const increment   = total > 0 ? (succeeded / total) * 0.5 : 0.2
+        const lastStep    = steps.filter(s => s.success).pop()?.step
+                         ?? result.output
+                         ?? 'execution cycle'
+        const agentId     = (result.data as { subAgentId?: string })?.subAgentId
+        recordGoalActivity(goalId, lastStep, increment, agentId)
+      }
+    } catch (err) {
+      console.error('[AXON] goal progress update failed:', err)
     }
-    if (taskAgent.canHandle(followOn)) {
-      taskAgent.execute(followOn).catch(console.error)
+  }
+
+  // 4. TaskAgent follow-on (async, non-blocking)
+  if (result.success && result.data) {
+    try {
+      const { TaskAgent } = await import('./TaskAgent.js')
+      const taskAgent = new TaskAgent()
+      const followOn: Input = {
+        raw:    `execution completed: ${result.output ?? ''}`,
+        type:   'task_creation',
+        source: 'agent_feedback',
+        ts:     Date.now(),
+        metadata: { executionResult: result.data, originalGoal: input.raw },
+      }
+      if (taskAgent.canHandle(followOn)) {
+        taskAgent.execute(followOn).catch(console.error)
+      }
+    } catch (err) {
+      console.error('[AXON] follow-on task creation failed:', err)
     }
   }
 }
@@ -97,10 +147,13 @@ async function onAgentResult(result: AgentResult, input: Input): Promise<void> {
 // ── Main router ──────────────────────────────────────────────────────────────
 
 export async function axonRoute(input: Input): Promise<AgentResult> {
-  const type        = input.type ?? classifyIntent(input.raw)
-  const typedInput  = { ...input, type }
+  const type       = input.type ?? classifyIntent(input.raw)
+  const typedInput = { ...input, type }
 
   console.log(`[AXON] route type=${type} source=${input.source} "${input.raw.slice(0, 80)}"`)
+
+  // Side-effect: persist goal if human expressed long-term intent
+  maybeCreateGoal(typedInput).catch(console.error)
 
   const agents = await getAgentChain()
   let result: AgentResult | null = null
@@ -112,13 +165,12 @@ export async function axonRoute(input: Input): Promise<AgentResult> {
     }
   }
 
-  // Should never happen — ConversationAgent is a catch-all
   if (!result) {
     result = {
-      agentId: 'axon',
-      success: false,
-      output: null,
-      error: 'no agent could handle input',
+      agentId:   'axon',
+      success:   false,
+      output:    null,
+      error:     'no agent could handle input',
       durationMs: 0,
     }
   }
@@ -127,12 +179,13 @@ export async function axonRoute(input: Input): Promise<AgentResult> {
   return result
 }
 
-// ── Convenience factory for use in index.ts ──────────────────────────────────
+// ── Input factory ─────────────────────────────────────────────────────────────
 
 export function makeInput(
-  raw: string,
-  source: Input['source'] = 'transcript',
-  type?: InputType
+  raw:      string,
+  source:   Input['source']  = 'transcript',
+  type?:    InputType,
+  metadata?: Record<string, unknown>
 ): Input {
-  return { raw, source, ts: Date.now(), type }
+  return { raw, source, ts: Date.now(), type, metadata }
 }

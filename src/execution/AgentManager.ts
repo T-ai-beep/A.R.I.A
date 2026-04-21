@@ -174,6 +174,83 @@ function buildToolInput(
   }
 }
 
+// ── Weak-result detection ─────────────────────────────────────────────────────
+// A step result is "weak" if it produced no usable output for downstream steps.
+
+function isWeakResult(result: StepResult): boolean {
+  if (!result.success) return true
+  if (result.output === null || result.output === undefined) return true
+  if (typeof result.output === 'string' && result.output.trim().length < 10) return true
+  if (typeof result.output === 'object' && result.output !== null) {
+    const o = result.output as Record<string, unknown>
+    if (Array.isArray(o['results']) && (o['results'] as unknown[]).length === 0) return true
+    if (typeof o['wordCount'] === 'number' && o['wordCount'] < 20) return true
+  }
+  return false
+}
+
+// ── Adaptive replanning ───────────────────────────────────────────────────────
+// Called when a step produces a weak result. Regenerates the remaining plan
+// using what has succeeded so far as context.
+
+async function replanRemaining(
+  goal: string,
+  remainingSteps: string[],
+  completedResults: StepResult[]
+): Promise<string[]> {
+  const successCtx = completedResults
+    .filter(r => r.success)
+    .map(r => `- ${r.step} → ${JSON.stringify(r.output).slice(0, 100)}`)
+    .join('\n') || 'none'
+
+  const failCtx = completedResults
+    .filter(r => !r.success)
+    .map(r => `- ${r.step} → FAILED: ${r.error}`)
+    .join('\n') || 'none'
+
+  try {
+    const res = await fetch(CONFIG.OLLAMA_URL, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: CONFIG.OLLAMA_MODEL,
+        messages: [
+          {
+            role:    'system',
+            content: PLAN_SYSTEM +
+              '\nIMPORTANT: Adapt the plan based on what has already succeeded and failed. ' +
+              'If a step failed, try a different approach. Return ONLY a JSON array.',
+          },
+          {
+            role:    'user',
+            content: [
+              `Goal: ${goal}`,
+              `Succeeded:\n${successCtx}`,
+              `Failed:\n${failCtx}`,
+              `Original remaining steps: ${JSON.stringify(remainingSteps)}`,
+              'Generate a revised plan for the remaining steps.',
+            ].join('\n\n'),
+          },
+        ],
+        stream: false,
+      }),
+      signal: AbortSignal.timeout(CONFIG.OLLAMA_SUMMARY_TIMEOUT_MS),
+    })
+
+    const data    = await res.json() as { message?: { content?: string } }
+    const content = (data.message?.content ?? '').trim()
+    const match   = content.match(/\[[\s\S]*\]/)
+    if (!match) return remainingSteps
+
+    const parsed  = JSON.parse(match[0]) as unknown[]
+    const revised = parsed.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+    return revised.length > 0 ? revised.slice(0, 4) : remainingSteps
+
+  } catch {
+    return remainingSteps   // keep original on LLM error — do not stall execution
+  }
+}
+
 // ── Step execution with retry ────────────────────────────────────────────────
 
 const MAX_RETRIES = 2
@@ -262,8 +339,23 @@ export async function executeAgent(agentId: string): Promise<SubAgent> {
     if (result.success) {
       log(agent, `step ${i + 1} ✓ tool=${result.tool} (${result.durationMs}ms)`)
     } else {
-      log(agent, `step ${i + 1} ✗ ${result.error} — continuing`)
-      // Non-blocking: continue execution even if a step fails
+      log(agent, `step ${i + 1} ✗ ${result.error}`)
+    }
+
+    // Adaptive replanning: if this step was weak and more steps remain, regenerate
+    const hasMoreSteps = i < agent.plan.length - 1
+    if (isWeakResult(result) && hasMoreSteps) {
+      log(agent, `step ${i + 1} produced weak result — replanning remaining steps`)
+      const revised = await replanRemaining(
+        agent.goal,
+        agent.plan.slice(i + 1),
+        stepResults
+      )
+      if (revised.join() !== agent.plan.slice(i + 1).join()) {
+        agent.plan = [...agent.plan.slice(0, i + 1), ...revised]
+        log(agent, `replanned: ${revised.map((s, j) => `\n  ${i + 2 + j}. ${s}`).join('')}`)
+        console.log(`[AGENT_MGR] ${agent.id} replanned — ${revised.length} new step(s) from position ${i + 2}`)
+      }
     }
   }
 
