@@ -35,6 +35,13 @@ async function init() {
   const { transcribe }        = await import('./audio/whisper.js')
   const { decide, setMode, getTaskContext, getPeopleContext, getFollowUpContext, getTrajectoryContext, getEpisodicContext, getIdentityContext }
                               = await import('./pipeline/decision.js')
+  const { AXONCore }          = await import('./agents/AXONCore.js')
+  const { AgentManager }      = await import('./agents/AgentManager.js')
+  const { ConversationAgent } = await import('./agents/ConversationAgent.js')
+  const { TaskAgent }         = await import('./agents/TaskAgent.js')
+  const { ExecutionAgent }    = await import('./agents/ExecutionAgent.js')
+  const { ResearchAgent }     = await import('./agents/ResearchAgent.js')
+  type AxonInput              = import('./agents/types.js').Input
   const { warmupEmbeddings }  = await import('./pipeline/embeddings.js')
   const { speak }             = await import('./pipeline/tts.js')
   const { clearMemory, getContext, getLastTurn } = await import('./pipeline/memory.js')
@@ -182,6 +189,16 @@ ${memLine}${ragLine}${leverageLine ? '\n\n' + leverageLine : ''}`
   ])
   console.log('[INIT] all systems ready')
 
+  // ── Agent orchestration setup ─────────────────────────────────────────────
+  const agentManager = new AgentManager()
+  agentManager.setOnCompleteCallback(a => AXONCore.getInstance().onAgentComplete(a))
+
+  const axon = AXONCore.getInstance()
+  axon.registerAgent(new ResearchAgent())
+  axon.registerAgent(new TaskAgent())
+  axon.registerAgent(new ExecutionAgent(agentManager))
+  axon.registerAgent(new ConversationAgent())
+
   speak('online')
 
   const vad = new VAD()
@@ -257,29 +274,44 @@ ${memLine}${ragLine}${leverageLine ? '\n\n' + leverageLine : ''}`
         return
       }
 
-      // Passive mode: decision pipeline
-      const decision = await decide(transcript)
-
-      if (!decision) {
-        const last = getLastTurn()
-        if (last?.intent === 'QUESTION') {
-          console.log('[QUESTION] routing to ariaRespond')
-          await ariaRespond(transcript)
-        }
-        return
+      // Passive mode: route through AXONCore
+      const axonInput: AxonInput = {
+        id:      `inp_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+        source:  'transcript',
+        text:    transcript,
+        ts:      Date.now(),
+        speaker,
       }
 
-      if (decision === 'ARIA_QUERY') {
+      const result = await AXONCore.getInstance().route(axonInput)
+
+      // ConversationAgent: decide() already called speak() internally — do NOT re-speak
+      // All other agents: speak their output if present
+      if (result.output && result.agentId !== 'conversation') {
+        const enforced = enforceOutput(result.output)
+        if (enforced) {
+          speak(enforced)
+          emitARSignal('RED', enforced)
+          saveToHistory({ ts: Date.now(), transcript, intent: null, response: enforced })
+        }
+      }
+
+      // Preserve ARIA_QUERY sentinel from ConversationAgent
+      if (result.output === 'ARIA_QUERY') {
         activateAria()
         await ariaRespond(transcript)
         deactivateAria()
         return
       }
 
-      const enforced = enforceOutput(decision)
-      console.log(`[FIRE] "${enforced}"`)
-      emitARSignal('RED', enforced)
-      saveToHistory({ ts: Date.now(), transcript, intent: null, response: enforced })
+      // Preserve QUESTION fallback for null decisions from ConversationAgent
+      if (!result.output && result.agentId === 'conversation') {
+        const last = getLastTurn()
+        if (last?.intent === 'QUESTION') {
+          console.log('[QUESTION] routing to ariaRespond')
+          await ariaRespond(transcript)
+        }
+      }
 
     } catch (err) {
       console.error(`[ERROR] ${label}`, err)
