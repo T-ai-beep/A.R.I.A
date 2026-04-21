@@ -1,21 +1,39 @@
 /**
- * ExecutionAgent — transforms high-level goals into real-world actions.
+ * ExecutionAgent — single-node executor.
  *
- * Flow:
- *   Input (execution_request)
- *     → createAgent(goal)     — LLM plan generation in AgentManager
- *     → executeAgent(id)      — sequential step execution via tool system
- *     → buildSummary()        — aggregate results into human-readable output
- *     → return AgentResult    — with full step log, plans, and outputs
+ * Responsibilities (ONLY):
+ *   - Select the correct tool for a PlanNode
+ *   - Build typed tool input from context
+ *   - Execute the tool (retry handled by AgentManager.runStep)
+ *   - Return a typed result
  *
- * Example:
- *   Input: "research competitors and send summary email"
- *   Plan:  ["search for competitors", "scrape their sites", "write summary", "send email"]
- *   Each step maps to: browser.search → browser.scrape → file.write → email.send
+ * ExecutionAgent does NOT:
+ *   - Create plans
+ *   - Loop over steps
+ *   - Make decisions about what to execute next
+ *
+ * The Coordinator owns the lifecycle. ExecutionAgent is a pure executor.
+ *
+ * execute(input) remains for backward-compat with axonRoute routing
+ * (direct user commands that aren't part of a goal plan). It creates
+ * a synthetic single-node from the input and calls executeNode.
  */
 
-import { Agent, AgentResult, Input, StepResult } from './types.js'
-import { createAgent, executeAgent } from '../execution/AgentManager.js'
+import { Agent, AgentResult, Input, PlanNode } from './types.js'
+import { selectTool, buildToolInput, runStep } from '../execution/AgentManager.js'
+
+export interface NodeContext {
+  goal:            string
+  previousOutputs: unknown[]
+  autoApprove?:    boolean
+}
+
+export interface NodeResult {
+  success:   boolean
+  output?:   unknown
+  error?:    string
+  durationMs: number
+}
 
 export class ExecutionAgent implements Agent {
   readonly id = 'execution'
@@ -24,92 +42,71 @@ export class ExecutionAgent implements Agent {
     return input.type === 'execution_request'
   }
 
+  // ── Single-node execution ─────────────────────────────────────────────────
+
+  async executeNode(node: PlanNode, ctx: NodeContext): Promise<NodeResult> {
+    const t0       = Date.now()
+    const toolName = node.tool || selectTool(node.description)
+
+    const toolInput = buildToolInput(
+      node.description,
+      toolName,
+      ctx.previousOutputs,
+      ctx.goal
+    )
+
+    const result = await runStep(toolName, toolInput, node.description.slice(0, 50))
+
+    return {
+      success:    result.success,
+      output:     result.output,
+      error:      result.error,
+      durationMs: Date.now() - t0,
+    }
+  }
+
+  // ── Backward-compat: direct execution_request routing via axonRoute ───────
+
   async execute(input: Input): Promise<AgentResult> {
     const t0 = Date.now()
 
     try {
-      console.log(`[EXECUTION] goal received: "${input.raw}"`)
+      console.log(`[EXECUTION] direct goal: "${input.raw.slice(0, 80)}"`)
 
-      const goalId   = input.metadata?.goalId as string | undefined
-      const subAgent = await createAgent(input.raw, goalId)
-
-      console.log(`[EXECUTION] ${subAgent.id} plan:`)
-      subAgent.plan.forEach((step, i) => console.log(`  ${i + 1}. ${step}`))
-
-      const completed = await executeAgent(subAgent.id)
-
-      const steps      = (completed.result ?? []) as StepResult[]
-      const succeeded  = steps.filter(r => r.success)
-      const failed     = steps.filter(r => !r.success)
-      const summary    = buildSummary(input.raw, steps)
-      const durationMs = (completed.completedAt ?? Date.now()) - (completed.startedAt ?? t0)
-
-      if (failed.length > 0) {
-        console.log(`[EXECUTION] ${failed.length} step(s) failed:`)
-        failed.forEach(f => console.log(`  ✗ [${f.tool}] ${f.step}: ${f.error}`))
+      const toolName = selectTool(input.raw)
+      const syntheticNode: PlanNode = {
+        id:          `direct_${Date.now()}`,
+        description: input.raw,
+        tool:        toolName,
+        status:      'pending',
+        attempts:    0,
+        maxAttempts: 3,
       }
 
+      const result = await this.executeNode(syntheticNode, {
+        goal:            input.raw,
+        previousOutputs: [],
+        autoApprove:     input.metadata?.autoApprove as boolean | undefined,
+      })
+
       return {
-        agentId:   this.id,
-        success:   completed.state === 'completed',
-        output:    summary,
-        data: {
-          subAgentId: subAgent.id,
-          plan:       subAgent.plan,
-          steps,
-          logs:       completed.logs,
-          durationMs,
-          succeeded:  succeeded.length,
-          failed:     failed.length,
-        },
+        agentId:    this.id,
+        success:    result.success,
+        output:     result.output != null ? String(result.output).slice(0, 500) : null,
+        data:       { tool: toolName, output: result.output },
+        error:      result.error,
         durationMs: Date.now() - t0,
       }
 
     } catch (err) {
-      console.error(`[EXECUTION] fatal error:`, err)
+      console.error(`[EXECUTION] fatal:`, err)
       return {
-        agentId:   this.id,
-        success:   false,
-        output:    null,
-        error:     String(err),
+        agentId:    this.id,
+        success:    false,
+        output:     null,
+        error:      String(err),
         durationMs: Date.now() - t0,
       }
     }
-  }
-}
-
-function buildSummary(goal: string, steps: StepResult[]): string {
-  const succeeded = steps.filter(r => r.success)
-  if (succeeded.length === 0) {
-    const errors = steps.map(s => s.error).filter(Boolean).join('; ')
-    return `Execution failed for: "${goal}". Errors: ${errors || 'unknown'}`
-  }
-
-  const lastSuccess = succeeded[succeeded.length - 1]
-  const outputStr   = formatOutput(lastSuccess.output)
-
-  const lines = [
-    `Completed: ${goal}`,
-    `Steps: ${succeeded.length}/${steps.length} succeeded`,
-    ``,
-    `Last result (${lastSuccess.tool}):`,
-    outputStr,
-  ]
-
-  if (steps.some(r => !r.success)) {
-    const failedSteps = steps.filter(r => !r.success).map(r => r.step)
-    lines.push(``, `Partial failures: ${failedSteps.join(', ')}`)
-  }
-
-  return lines.join('\n')
-}
-
-function formatOutput(output: unknown): string {
-  if (output === null || output === undefined) return '(no output)'
-  if (typeof output === 'string') return output.slice(0, 500)
-  try {
-    return JSON.stringify(output, null, 2).slice(0, 500)
-  } catch {
-    return String(output).slice(0, 500)
   }
 }

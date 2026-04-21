@@ -24,6 +24,25 @@ export interface Agent {
   execute(input: Input): Promise<AgentResult>
 }
 
+export interface PlanNode {
+  id:          string
+  description: string
+  tool:        string
+  status:      'pending' | 'running' | 'done' | 'failed'
+  attempts:    number
+  maxAttempts: number
+  result?:     unknown
+}
+
+export interface Plan {
+  id:        string
+  goalId:    string
+  nodes:     PlanNode[]
+  edges:     { from: string; to: string }[]
+  status:    'active' | 'blocked' | 'complete'
+  createdAt: number
+}
+
 export interface SubAgent {
   id: string
   goal: string

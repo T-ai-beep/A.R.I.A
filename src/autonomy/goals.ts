@@ -20,6 +20,8 @@ export interface Goal {
   priority: 'low' | 'medium' | 'high'
   progress: number       // 0–1
   nextAction?: string    // pre-queued step for next loop cycle
+  planId?: string        // linked Planner plan — set once plan is created
+  autoApprove?: boolean  // allow email.send without manual gate
   createdAt: number
   lastUpdated: number
   lastActivityAt: number // 0 = never acted on (triggers first-cycle dispatch)

@@ -1,34 +1,38 @@
 /**
  * loop.ts — the AXON autonomy loop.
  *
- * Runs continuously independent of user input.
- * Each cycle:
- *   1. Load active goals + open tasks
- *   2. evaluateState() → ranked list of AutonomyActions
- *   3. Dispatch each action through axonRoute() concurrently
+ * Two parallel tracks per cycle:
+ *
+ *   GOALS  → coordinator.acceptGoal(id)
+ *             Structured, stateful execution via Planner + Coordinator.
+ *             Plans are created once; nodes execute one-per-cycle.
+ *             Lease system prevents duplicate execution across cycles.
+ *
+ *   TASKS  → evaluateState([], tasks) → dispatch() → axonRoute()
+ *             Overdue task follow-ups via the existing evaluator path.
  *
  * Non-blocking guarantees:
  *   - Re-entrant guard: slow cycles are skipped, not queued
- *   - All dispatches use Promise.allSettled — one failure never kills another
- *   - Errors are caught and logged, never propagated to setInterval
+ *   - Promise.allSettled: one failure never kills another
+ *   - Errors caught and logged, never propagated to setInterval
  *
  * Tunable via env:
  *   AXON_LOOP_INTERVAL_MS   default 5000
- *   AXON_STALE_MS           default 300000 (5min) — in evaluator.ts
- *   AXON_MAX_ACTIONS        default 2       — in evaluator.ts
+ *   AXON_MAX_ACTIONS        default 2   (task evaluator cap)
  */
 
-import { getActiveGoals } from './goals.js'
-import { getOpenTasks }   from '../pipeline/tasks.js'
-import { evaluateState, AutonomyAction } from './evaluator.js'
-import { axonRoute, makeInput } from '../agents/AXONCore.js'
+import { getActiveGoals }                  from './goals.js'
+import { getOpenTasks }                    from '../pipeline/tasks.js'
+import { evaluateState, AutonomyAction }   from './evaluator.js'
+import { axonRoute, makeInput }            from '../agents/AXONCore.js'
 import { isGoalLocked, clearExpiredLeases } from '../world/WorldState.js'
+import { coordinator }                     from '../agents/Coordinator.js'
 
 const LOOP_INTERVAL_MS = parseInt(process.env.AXON_LOOP_INTERVAL_MS ?? '5000', 10)
 
-let _timer:      NodeJS.Timeout | null = null
-let _running     = false
-let _cycleCount  = 0
+let _timer:     NodeJS.Timeout | null = null
+let _running    = false
+let _cycleCount = 0
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 
@@ -46,10 +50,10 @@ export function stopAutonomyLoop(): void {
   console.log('[LOOP] stopped')
 }
 
-export function isLoopRunning():  boolean { return _timer !== null }
-export function getCycleCount():  number  { return _cycleCount }
+export function isLoopRunning(): boolean { return _timer !== null }
+export function getCycleCount(): number  { return _cycleCount }
 
-// ── Core cycle ───────────────────────────────────────────────────────────────
+// ── Core cycle ────────────────────────────────────────────────────────────────
 
 async function runCycle(): Promise<void> {
   if (_running) {
@@ -66,24 +70,33 @@ async function runCycle(): Promise<void> {
     const goals = getActiveGoals()
     const tasks = getOpenTasks()
 
-    // Skip quietly if nothing is actionable
-    const hasOverdue = tasks.some(t => t.resurfaceAt !== null && t.resurfaceAt < Date.now())
-    if (goals.length === 0 && !hasOverdue) return
+    const hasWork = goals.length > 0 ||
+      tasks.some(t => t.resurfaceAt !== null && t.resurfaceAt < Date.now())
 
-    console.log(`[LOOP] cycle ${cycle} — ${goals.length} active goal(s) | ${tasks.filter(t => t.status === 'open').length} open task(s)`)
+    if (!hasWork) return
 
-    const actions = await evaluateState(goals, tasks)
-
-    if (actions.length === 0) {
-      console.log(`[LOOP] cycle ${cycle} — nothing to dispatch`)
-      return
-    }
-
-    console.log(`[LOOP] cycle ${cycle} — ${actions.length} action(s) to dispatch`)
-
-    await Promise.allSettled(
-      actions.map(a => dispatch(a, cycle))
+    console.log(
+      `[LOOP] cycle ${cycle} — ${goals.length} active goal(s) | ` +
+      `${tasks.filter(t => t.status === 'open').length} open task(s)`
     )
+
+    // ── Goal track: Coordinator handles structured plan execution ────────────
+    const goalWork = goals.map(goal => {
+      if (isGoalLocked(goal.id)) {
+        console.log(`[LOOP] goal ${goal.id.slice(-8)} locked — skipping`)
+        return Promise.resolve()
+      }
+      return coordinator.acceptGoal(goal.id).catch(err =>
+        console.error(`[LOOP] coordinator error for goal ${goal.id}:`, err)
+      )
+    })
+
+    // ── Task track: evaluator handles overdue task follow-ups ────────────────
+    // Pass empty goals array — evaluator is only used for task actions now
+    const taskActions = await evaluateState([], tasks)
+    const taskWork = taskActions.map(a => dispatch(a, cycle))
+
+    await Promise.allSettled([...goalWork, ...taskWork])
 
   } catch (err) {
     console.error(`[LOOP] cycle ${cycle} unhandled error:`, err)
@@ -92,25 +105,14 @@ async function runCycle(): Promise<void> {
   }
 }
 
-// ── Dispatch ─────────────────────────────────────────────────────────────────
+// ── Task dispatch (legacy path for overdue task follow-ups) ──────────────────
 
 async function dispatch(action: AutonomyAction, cycle: number): Promise<void> {
-  const tag = action.goalId
-    ? `goal:${action.goalId.slice(-8)}`
-    : action.taskId
-    ? `task:${action.taskId.slice(-8)}`
-    : 'adhoc'
-
-  // Skip if this goal is currently being executed by another agent
-  if (action.goalId && isGoalLocked(action.goalId)) {
-    console.log(`[LOOP] skipped [${tag}] — goal locked by active agent`)
-    return
-  }
+  const tag = action.taskId ? `task:${action.taskId.slice(-8)}` : 'adhoc'
 
   console.log(`[LOOP] ↳ [${tag}] "${action.input.slice(0, 80)}" — ${action.reason}`)
 
   const input = makeInput(action.input, 'system_trigger', action.type, {
-    ...(action.goalId ? { goalId: action.goalId } : {}),
     ...(action.taskId ? { taskId: action.taskId } : {}),
     loopCycle: cycle,
   })
@@ -118,7 +120,6 @@ async function dispatch(action: AutonomyAction, cycle: number): Promise<void> {
   try {
     await axonRoute(input)
   } catch (err) {
-    // Log and continue — a failed dispatch must never crash the loop
     console.error(`[LOOP] dispatch error [${tag}]:`, err)
   }
 }
