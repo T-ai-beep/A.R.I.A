@@ -12,7 +12,8 @@
     "test:failure": "npx tsx IRA_test_suite/src/harness/runner.ts --suite=failure",
     "test:coach": "npx tsx IRA_test_suite/src/harness/runner.ts --suite=coach",
     "bench": "npx tsx src/bench.ts",
-    "start": "npx tsx src/index.ts"
+    "start": "npx tsx src/index.ts",
+    "test:coordinator": "npx tsx src/agents/tests/coordinator.test.ts"
   },
   "keywords": [],
   "author": "",

@@ -43,24 +43,49 @@ export interface Agent {
   execute(input: Input): Promise<AgentResult>
 }
 
-// ── Sub-agent system ──────────────────────────────────────────────────────────
+// ── Plan / Coordinator system ─────────────────────────────────────────────────
 
-export type SubAgentState =
-  | 'pending'
-  | 'running'
-  | 'completed'
-  | 'failed'
+export interface PlanNode {
+  id:             string
+  goalId:         string
+  step:           string
+  toolName:       string
+  toolInput:      Record<string, unknown>
+  state:          'pending' | 'running' | 'completed' | 'failed'
+  idempotencyKey: string
+  leaseOwner?:    string
+  leaseExpiry?:   number
+  completedAt?:   number
+  result?:        unknown
+  error?:         string
+}
 
-export interface SubAgent {
-  id:          string
-  goal:        string
-  plan:        string[]
-  state:       SubAgentState
-  currentStep: number
-  result?:     unknown
-  logs:        string[]
-  createdAt:   number
-  updatedAt:   number
+export interface Plan {
+  id:        string
+  goal:      string
+  createdAt: number
+  state:     'active' | 'completed' | 'failed'
+  nodes:     PlanNode[]
+}
+
+export interface ExecutionContext {
+  lastResult?: string
+  lastUrl?:    string
+  draft?:      string
+}
+
+export interface NodeResult {
+  nodeId:   string
+  success:  boolean
+  data?:    unknown
+  error?:   string
+}
+
+export interface CoordinatorResult {
+  planId:      string
+  success:     boolean
+  results:     NodeResult[]
+  lastResult?: unknown
 }
 
 // ── Tool system ───────────────────────────────────────────────────────────────

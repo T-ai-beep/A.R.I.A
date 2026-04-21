@@ -2,6 +2,7 @@ import * as fs   from 'fs'
 import * as path from 'path'
 import * as os   from 'os'
 import type { Tool, ToolResult } from '../types.js'
+import { assertInNodeContext }   from '../ToolGuard.js'
 
 const ARIA_DIR  = path.join(os.homedir(), '.aria')
 const FILES_DIR = path.join(ARIA_DIR, 'agent_files')
@@ -21,6 +22,7 @@ export const fileWrite: Tool = {
   description: 'Write content to a file in ~/.aria/agent_files/',
 
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
+    assertInNodeContext('file.write')
     const rawName = typeof input['filename'] === 'string' ? input['filename'] : `note_${Date.now()}.txt`
     const content = typeof input['content']  === 'string' ? input['content']  : ''
 
@@ -44,6 +46,7 @@ export const fileRead: Tool = {
   description: 'Read content from a file in ~/.aria/agent_files/',
 
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
+    assertInNodeContext('file.read')
     const rawName = typeof input['filename'] === 'string' ? input['filename'] : ''
     if (!rawName) return { success: false, error: 'filename is required' }
 
@@ -54,8 +57,7 @@ export const fileRead: Tool = {
       ensureDir()
       const filepath = path.join(FILES_DIR, safe)
       if (!fs.existsSync(filepath)) return { success: false, error: `File not found: ${safe}` }
-      const content = fs.readFileSync(filepath, 'utf-8')
-      return { success: true, data: content }
+      return { success: true, data: fs.readFileSync(filepath, 'utf-8') }
     } catch (e) {
       return { success: false, error: e instanceof Error ? e.message : String(e) }
     }

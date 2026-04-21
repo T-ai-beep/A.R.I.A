@@ -1,6 +1,12 @@
-import type { Agent, AgentResult, Input, IntentClass, IntentScore, SubAgent } from './types.js'
+// ── AXONCore — pure router ────────────────────────────────────────────────────
+//
+// Classifies intent and dispatches to one registered agent.
+// Does NOT execute tools, spawn agents, or create plans.
+// Registered agents: ResearchAgent(1) → TaskAgent(2) → Coordinator(3) → ConversationAgent(99)
 
-// ── Intent classifier — keyword scoring (no LLM, must be <5ms) ───────────────
+import type { Agent, AgentResult, Input, IntentClass, IntentScore } from './types.js'
+
+// ── Intent keyword banks ──────────────────────────────────────────────────────
 
 const KEYWORD_BANKS: Record<Exclude<IntentClass, 'unknown'>, readonly string[]> = {
   conversation: ['price', 'objection', 'stall', 'agreement', 'competitor', 'meeting', 'interview', 'negotiate', 'offer', 'deal', 'afford'],
@@ -10,21 +16,13 @@ const KEYWORD_BANKS: Record<Exclude<IntentClass, 'unknown'>, readonly string[]> 
 }
 
 export function classifyIntent(text: string): IntentScore {
-  const lower = text.toLowerCase()
-
-  const scores: Record<Exclude<IntentClass, 'unknown'>, number> = {
-    conversation: 0, task: 0, execution: 0, research: 0,
-  }
-  const matched: Record<Exclude<IntentClass, 'unknown'>, string[]> = {
-    conversation: [], task: [], execution: [], research: [],
-  }
+  const lower   = text.toLowerCase()
+  const scores  = { conversation: 0, task: 0, execution: 0, research: 0 } as Record<Exclude<IntentClass, 'unknown'>, number>
+  const matched = { conversation: [] as string[], task: [] as string[], execution: [] as string[], research: [] as string[] }
 
   for (const [intent, keywords] of Object.entries(KEYWORD_BANKS) as [Exclude<IntentClass, 'unknown'>, readonly string[]][]) {
     for (const kw of keywords) {
-      if (lower.includes(kw)) {
-        scores[intent]++
-        matched[intent].push(kw)
-      }
+      if (lower.includes(kw)) { scores[intent]++; matched[intent].push(kw) }
     }
   }
 
@@ -37,16 +35,15 @@ export function classifyIntent(text: string): IntentScore {
     const norm = raw / total
     if (norm > bestScore) { bestScore = norm; best = intent }
   }
-
   return { intent: best, score: bestScore, matched: matched[best] }
 }
 
-// ── Priority table — lower number = higher priority ───────────────────────────
+// ── Priority table ────────────────────────────────────────────────────────────
 
 const AGENT_PRIORITY: Record<string, number> = {
   research:     1,
   task:         2,
-  execution:    3,
+  coordinator:  3,
   conversation: 99,
 }
 
@@ -77,13 +74,7 @@ export class AXONCore {
       .sort((a, b) => (AGENT_PRIORITY[a.id] ?? 50) - (AGENT_PRIORITY[b.id] ?? 50))
 
     if (!candidates.length) {
-      return {
-        agentId:    'axon',
-        inputId:    input.id,
-        success:    false,
-        error:      'No agent could handle this input',
-        durationMs: Date.now() - t0,
-      }
+      return { agentId: 'axon', inputId: input.id, success: false, error: 'No agent could handle this input', durationMs: Date.now() - t0 }
     }
 
     const agent = candidates[0]
@@ -91,30 +82,12 @@ export class AXONCore {
 
     try {
       const result = await agent.execute(input)
-      console.log(
-        `[AXON] agent=${agent.id} success=${result.success} duration=${result.durationMs}ms` +
-        (result.spawnedAgents?.length ? ` spawned=${result.spawnedAgents.join(',')}` : '')
-      )
+      console.log(`[AXON] agent=${agent.id} success=${result.success} duration=${result.durationMs}ms`)
       return result
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e)
       console.error(`[AXON] agent=${agent.id} threw: ${err}`)
-      return {
-        agentId:    agent.id,
-        inputId:    input.id,
-        success:    false,
-        error:      err,
-        durationMs: Date.now() - t0,
-      }
-    }
-  }
-
-  onAgentComplete(agent: SubAgent): void {
-    console.log(`[AXON] sub-agent ${agent.id} ${agent.state} — ${agent.plan.length} steps`)
-    if (agent.state === 'completed') {
-      console.log(`[AXON] result: ${JSON.stringify(agent.result).slice(0, 100)}`)
-    } else if (agent.state === 'failed') {
-      console.error(`[AXON] sub-agent ${agent.id} failed`)
+      return { agentId: agent.id, inputId: input.id, success: false, error: err, durationMs: Date.now() - t0 }
     }
   }
 }

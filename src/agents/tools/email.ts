@@ -2,6 +2,7 @@ import * as fs   from 'fs'
 import * as path from 'path'
 import * as os   from 'os'
 import type { Tool, ToolResult } from '../types.js'
+import { assertInNodeContext }   from '../ToolGuard.js'
 
 const ARIA_DIR    = path.join(os.homedir(), '.aria')
 const EMAIL_QUEUE = path.join(ARIA_DIR, 'email_queue.jsonl')
@@ -28,6 +29,7 @@ export const emailSend: Tool = {
   description: 'Queue an email for sending (logged to ~/.aria/email_queue.jsonl)',
 
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
+    assertInNodeContext('email.send')
     const to      = typeof input['to']      === 'string' ? input['to']      : ''
     const subject = typeof input['subject'] === 'string' ? input['subject'] : '(no subject)'
     const body    = typeof input['body']    === 'string' ? input['body']    : ''
@@ -35,14 +37,7 @@ export const emailSend: Tool = {
     if (!to)   return { success: false, error: 'to is required' }
     if (!body) return { success: false, error: 'body is required' }
 
-    const entry: QueuedEmail = {
-      id:     genId(),
-      to,
-      subject,
-      body,
-      ts:     Date.now(),
-      status: 'queued',
-    }
+    const entry: QueuedEmail = { id: genId(), to, subject, body, ts: Date.now(), status: 'queued' }
 
     try {
       ensureDir()

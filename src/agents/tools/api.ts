@@ -1,4 +1,5 @@
 import type { Tool, ToolResult } from '../types.js'
+import { assertInNodeContext }   from '../ToolGuard.js'
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
@@ -10,6 +11,7 @@ export const apiCall: Tool = {
   description: 'Make a generic HTTP API call',
 
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
+    assertInNodeContext('api.call')
     const url    = typeof input['url']    === 'string' ? input['url']    : ''
     const method = typeof input['method'] === 'string'
       ? (input['method'].toUpperCase() as HttpMethod)

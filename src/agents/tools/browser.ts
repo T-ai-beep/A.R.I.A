@@ -1,11 +1,13 @@
 import type { Tool, ToolResult } from '../types.js'
-import { webSearch } from '../../pipeline/rag.js'
+import { assertInNodeContext } from '../ToolGuard.js'
+import { webSearch }           from '../../pipeline/rag.js'
 
 export const browserSearch: Tool = {
   name: 'browser.search',
   description: 'Search the web for information using DuckDuckGo',
 
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
+    assertInNodeContext('browser.search')
     const query = typeof input['query'] === 'string' ? input['query'] : ''
     if (!query) return { success: false, error: 'query is required' }
 
@@ -23,6 +25,7 @@ export const browserScrape: Tool = {
   description: 'Fetch and extract text content from a URL',
 
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
+    assertInNodeContext('browser.scrape')
     const url = typeof input['url'] === 'string' ? input['url'] : ''
     if (!url) return { success: false, error: 'url is required' }
 

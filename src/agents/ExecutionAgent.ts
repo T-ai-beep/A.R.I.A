@@ -1,50 +1,56 @@
-import type { Agent, AgentResult, Input } from './types.js'
-import type { AgentManager }               from './AgentManager.js'
+// ── ExecutionAgent — pure node executor ──────────────────────────────────────
+//
+// Does exactly one thing: execute a single plan node using the mapped tool.
+// NOT an Agent (does not implement canHandle/execute(Input)).
+// Only callable from Coordinator._runGoal().
+// Sets ToolGuard active node before every tool call, clears it after.
 
-const ACTION_VERBS =
-  /\b(send|email|search|find|research|browse|book|call|fetch|scrape|schedule|draft|write|look up)\b/gi
+import type { PlanNode, ExecutionContext, NodeResult } from './types.js'
+import { getTool }       from './tools/index.js'
+import { setActiveNode } from './ToolGuard.js'
 
-export class ExecutionAgent implements Agent {
-  readonly id = 'execution'
-
-  constructor(private readonly manager: AgentManager) {}
-
-  canHandle(input: Input): boolean {
-    if (input.source === 'command' || input.source === 'system_trigger') return true
-    if (input.source === 'transcript') {
-      // Require 2+ action verbs to avoid intercepting single-verb conversation turns
-      const matches = input.text.match(ACTION_VERBS)
-      return (matches?.length ?? 0) >= 2
+export class ExecutionAgent {
+  async executeNode(node: PlanNode, ctx: ExecutionContext): Promise<NodeResult> {
+    const tool = getTool(node.toolName)
+    if (!tool) {
+      return { nodeId: node.id, success: false, error: `Unknown tool: "${node.toolName}"` }
     }
-    return false
+
+    const input = this._resolveInput(node, ctx)
+    console.log(`[EXEC] node=${node.id} tool=${node.toolName} input=${JSON.stringify(input).slice(0, 120)}`)
+
+    setActiveNode(node.id)
+    let toolResult
+    try {
+      toolResult = await tool.execute(input)
+    } finally {
+      setActiveNode(null)   // always clear, even on throw
+    }
+
+    if (!toolResult.success) {
+      return { nodeId: node.id, success: false, error: toolResult.error }
+    }
+    return { nodeId: node.id, success: true, data: toolResult.data }
   }
 
-  async execute(input: Input): Promise<AgentResult> {
-    const t0   = Date.now()
-    const goal = input.text.trim()
+  // Injects execution context into fields left empty by Planner (e.g. URL, body).
+  private _resolveInput(node: PlanNode, ctx: ExecutionContext): Record<string, unknown> {
+    const input = { ...node.toolInput }
 
-    const subAgent  = this.manager.createAgent(goal)
-    subAgent.plan   = await this.manager.generatePlan(goal)
-
-    // Non-blocking: execution continues in the background
-    this.manager.executeAgent(subAgent.id)
-
-    const output = `On it. ${this.summarizeGoal(goal)}.`
-
-    return {
-      agentId:       this.id,
-      inputId:       input.id,
-      success:       true,
-      output,
-      data:          { subAgentId: subAgent.id, plan: subAgent.plan },
-      spawnedAgents: [subAgent.id],
-      durationMs:    Date.now() - t0,
+    if (node.toolName === 'browser.scrape' && !input['url'] && ctx.lastUrl) {
+      input['url'] = ctx.lastUrl
     }
-  }
+    if (node.toolName === 'file.write') {
+      if (!input['content'] && ctx.lastResult) {
+        input['content']  = ctx.lastResult
+        input['filename'] = `plan_${node.goalId}_${node.id}.txt`
+      }
+    }
+    if (node.toolName === 'email.send') {
+      if (!input['body'] && ctx.draft)      input['body'] = ctx.draft
+      else if (!input['body'] && ctx.lastResult) input['body'] = ctx.lastResult
+    }
 
-  private summarizeGoal(goal: string): string {
-    const words = goal.trim().split(/\s+/)
-    if (words.length <= 5) return goal.trim()
-    return words.slice(0, 5).join(' ')
+    return input
   }
 }

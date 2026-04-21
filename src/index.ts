@@ -36,10 +36,9 @@ async function init() {
   const { decide, setMode, getTaskContext, getPeopleContext, getFollowUpContext, getTrajectoryContext, getEpisodicContext, getIdentityContext }
                               = await import('./pipeline/decision.js')
   const { AXONCore }          = await import('./agents/AXONCore.js')
-  const { AgentManager }      = await import('./agents/AgentManager.js')
+  const { Coordinator }       = await import('./agents/Coordinator.js')
   const { ConversationAgent } = await import('./agents/ConversationAgent.js')
   const { TaskAgent }         = await import('./agents/TaskAgent.js')
-  const { ExecutionAgent }    = await import('./agents/ExecutionAgent.js')
   const { ResearchAgent }     = await import('./agents/ResearchAgent.js')
   type AxonInput              = import('./agents/types.js').Input
   const { warmupEmbeddings }  = await import('./pipeline/embeddings.js')
@@ -190,13 +189,11 @@ ${memLine}${ragLine}${leverageLine ? '\n\n' + leverageLine : ''}`
   console.log('[INIT] all systems ready')
 
   // ── Agent orchestration setup ─────────────────────────────────────────────
-  const agentManager = new AgentManager()
-  agentManager.setOnCompleteCallback(a => AXONCore.getInstance().onAgentComplete(a))
-
+  // All execution flows: AXONCore → Coordinator → ExecutionAgent → tool
   const axon = AXONCore.getInstance()
   axon.registerAgent(new ResearchAgent())
   axon.registerAgent(new TaskAgent())
-  axon.registerAgent(new ExecutionAgent(agentManager))
+  axon.registerAgent(Coordinator.getInstance())
   axon.registerAgent(new ConversationAgent())
 
   speak('online')
