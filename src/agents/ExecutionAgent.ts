@@ -30,7 +30,8 @@ export class ExecutionAgent implements Agent {
     try {
       console.log(`[EXECUTION] goal received: "${input.raw}"`)
 
-      const subAgent = await createAgent(input.raw)
+      const goalId   = input.metadata?.goalId as string | undefined
+      const subAgent = await createAgent(input.raw, goalId)
 
       console.log(`[EXECUTION] ${subAgent.id} plan:`)
       subAgent.plan.forEach((step, i) => console.log(`  ${i + 1}. ${step}`))

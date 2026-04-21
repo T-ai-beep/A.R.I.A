@@ -22,6 +22,7 @@ import { getActiveGoals } from './goals.js'
 import { getOpenTasks }   from '../pipeline/tasks.js'
 import { evaluateState, AutonomyAction } from './evaluator.js'
 import { axonRoute, makeInput } from '../agents/AXONCore.js'
+import { isGoalLocked, clearExpiredLeases } from '../world/WorldState.js'
 
 const LOOP_INTERVAL_MS = parseInt(process.env.AXON_LOOP_INTERVAL_MS ?? '5000', 10)
 
@@ -60,6 +61,8 @@ async function runCycle(): Promise<void> {
   const cycle = ++_cycleCount
 
   try {
+    clearExpiredLeases()
+
     const goals = getActiveGoals()
     const tasks = getOpenTasks()
 
@@ -97,6 +100,12 @@ async function dispatch(action: AutonomyAction, cycle: number): Promise<void> {
     : action.taskId
     ? `task:${action.taskId.slice(-8)}`
     : 'adhoc'
+
+  // Skip if this goal is currently being executed by another agent
+  if (action.goalId && isGoalLocked(action.goalId)) {
+    console.log(`[LOOP] skipped [${tag}] — goal locked by active agent`)
+    return
+  }
 
   console.log(`[LOOP] ↳ [${tag}] "${action.input.slice(0, 80)}" — ${action.reason}`)
 

@@ -17,6 +17,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { writeAtomic } from '../world/atomicWrite.js'
 
 const ARIA_DIR      = path.join(os.homedir(), '.aria')
 const CAPTURE_FILE  = path.join(ARIA_DIR, 'capture.jsonl')
@@ -115,7 +116,7 @@ function loadIndex(): CaptureIndex {
 
 function saveIndex(index: CaptureIndex) {
   ensureDir()
-  fs.writeFileSync(INDEX_FILE, JSON.stringify(index, null, 2))
+  writeAtomic(INDEX_FILE, JSON.stringify(index, null, 2))
 }
 
 // ── Write ──────────────────────────────────────────────────────────────────
@@ -239,7 +240,7 @@ export function searchCaptures(opts: CaptureSearchOpts): CaptureEntry[] {
   if (opts.speaker)   entries = entries.filter(e => e.speaker === opts.speaker)
   if (opts.sessionId) entries = entries.filter(e => e.sessionId === opts.sessionId)
   if (opts.tags?.length) {
-    entries = entries.filter(e => opts.tags!.some(t => e.tags.includes(t)))
+    entries = entries.filter(e => (e.tags ?? []).some(t => opts.tags!.includes(t)))
   }
   if (opts.query) {
     const q = opts.query.toLowerCase()

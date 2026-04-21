@@ -33,6 +33,7 @@
 import { recallEpisodes, EpisodicEvent, getEpisode } from '../pipeline/epsodic.js'
 import { getAllPeople }   from '../pipeline/people.js'
 import { loadRecaps }     from './dailyRecap.js'
+import { writeAtomic }    from '../world/atomicWrite.js'
 import * as fs            from 'fs'
 import * as path          from 'path'
 import * as os            from 'os'
@@ -279,7 +280,8 @@ export async function buildBrainMap(): Promise<BrainMap> {
   const map = new BrainMap()
 
   // 1. Add all people as nodes
-  const people = getAllPeople()
+  let people: ReturnType<typeof getAllPeople> = []
+  try { people = getAllPeople() } catch (e) { console.error('[BRAIN MAP] getAllPeople failed:', e) }
   for (const person of people) {
     map.addNode({
       id:       `person:${person.name}`,
@@ -355,7 +357,8 @@ export async function buildBrainMap(): Promise<BrainMap> {
   }
 
   // 2. Add episodic events as nodes
-  const episodes = await recallEpisodes('', 200, { minImportance: 0.2 })
+  let episodes: Awaited<ReturnType<typeof recallEpisodes>> = []
+  try { episodes = await recallEpisodes('', 200, { minImportance: 0.2 }) } catch (e) { console.error('[BRAIN MAP] recallEpisodes failed:', e) }
   for (const ep of episodes) {
     const eventId = `event:${ep.id}`
 
@@ -494,9 +497,8 @@ export async function getBrainMap(forceRebuild = false): Promise<BrainMap> {
 
   // Persist
   try {
-    if (!fs.existsSync(ARIA_DIR)) fs.mkdirSync(ARIA_DIR, { recursive: true })
-    fs.writeFileSync(BRAIN_MAP_FILE, JSON.stringify(map.toData(), null, 2))
-  } catch {}
+    writeAtomic(BRAIN_MAP_FILE, JSON.stringify(map.toData(), null, 2))
+  } catch (e) { console.error('[BRAIN MAP] persist failed:', e) }
 
   return map
 }

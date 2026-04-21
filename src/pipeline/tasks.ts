@@ -1,6 +1,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { writeAtomic } from '../world/atomicWrite.js'
 
 const ARIA_DIR = path.join(os.homedir(), '.aria')
 const TASKS_FILE = path.join(ARIA_DIR, 'tasks.jsonl')
@@ -38,7 +39,7 @@ function loadAll(): Task[] {
 
 function saveAll(tasks: Task[]) {
   ensureDir()
-  fs.writeFileSync(TASKS_FILE, tasks.map(t => JSON.stringify(t)).join('\n') + '\n')
+  writeAtomic(TASKS_FILE, tasks.map(t => JSON.stringify(t)).join('\n') + '\n')
 }
 
 function genId(): string {

@@ -34,6 +34,7 @@ export interface SubAgent {
   logs: string[]
   startedAt?: number
   completedAt?: number
+  goalId?: string    // linked WorldState goal — enables lease management
 }
 
 export interface Tool {

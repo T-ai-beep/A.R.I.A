@@ -2,6 +2,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { CONFIG } from '../config.js'
+import { writeAtomic } from '../world/atomicWrite.js'
 
 const ARIA_DIR = path.join(os.homedir(), '.aria')
 const FOLLOWUPS_FILE = path.join(ARIA_DIR, 'followups.jsonl')
@@ -45,7 +46,7 @@ function loadAll(): FollowUp[] {
 
 function saveAll(items: FollowUp[]) {
   ensureDir()
-  fs.writeFileSync(FOLLOWUPS_FILE, items.map(i => JSON.stringify(i)).join('\n') + '\n')
+  writeAtomic(FOLLOWUPS_FILE, items.map(i => JSON.stringify(i)).join('\n') + '\n')
 }
 
 function genId(): string {

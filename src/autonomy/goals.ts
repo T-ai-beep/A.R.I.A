@@ -9,6 +9,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { writeAtomic } from '../world/atomicWrite.js'
 
 const GOALS_FILE = path.join(os.homedir(), '.aria', 'goals.json')
 
@@ -43,7 +44,7 @@ function loadAll(): Goal[] {
 
 function saveAll(goals: Goal[]): void {
   ensureDir()
-  fs.writeFileSync(GOALS_FILE, JSON.stringify(goals, null, 2), 'utf-8')
+  writeAtomic(GOALS_FILE, JSON.stringify(goals, null, 2))
 }
 
 function genId(): string {

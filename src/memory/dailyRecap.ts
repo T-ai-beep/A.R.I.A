@@ -290,10 +290,22 @@ export async function buildDailyRecap(date?: string): Promise<DailyRecap> {
 
   console.log(`[RECAP] building recap for ${targetDate}...`)
 
+  const defaultStats: DayStats = {
+    date: targetDate, totalCaptures: 0, totalWords: 0,
+    uniquePeople: [], topIntents: [], offers: [],
+    agreements: 0, stalls: 0, competitors: 0, activeHours: [],
+  }
+
   const [stats, unresolved, { wins, losses }] = await Promise.all([
-    buildDayStats(targetDate),
-    buildUnresolvedItems(),
-    buildWinsLosses(targetDate),
+    buildDayStats(targetDate).catch(e => {
+      console.error('[RECAP] buildDayStats failed:', e); return defaultStats
+    }),
+    buildUnresolvedItems().catch(e => {
+      console.error('[RECAP] buildUnresolvedItems failed:', e); return [] as RecapItem[]
+    }),
+    buildWinsLosses(targetDate).catch(e => {
+      console.error('[RECAP] buildWinsLosses failed:', e); return { wins: [] as string[], losses: [] as string[] }
+    }),
   ])
 
   const { narrative, actions } = await generateNarrative(targetDate, stats, unresolved)

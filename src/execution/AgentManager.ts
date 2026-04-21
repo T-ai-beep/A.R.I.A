@@ -12,6 +12,7 @@
 import { SubAgent, StepResult, Tool } from '../agents/types.js'
 import { CONFIG } from '../config.js'
 import { getToolRegistry } from './tools/index.js'
+import { acquireLease, releaseLease } from '../world/WorldState.js'
 
 // ── In-memory agent store ────────────────────────────────────────────────────
 
@@ -299,7 +300,7 @@ async function executeStep(
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-export async function createAgent(goal: string): Promise<SubAgent> {
+export async function createAgent(goal: string, goalId?: string): Promise<SubAgent> {
   const plan = await generatePlan(goal)
   const agent: SubAgent = {
     id:          genId(),
@@ -308,16 +309,28 @@ export async function createAgent(goal: string): Promise<SubAgent> {
     state:       'pending',
     currentStep: 0,
     logs:        [],
+    goalId,
   }
   log(agent, `created — ${plan.length} steps: ${plan.map((s, i) => `\n  ${i + 1}. ${s}`).join('')}`)
   agentStore.set(agent.id, agent)
-  console.log(`[AGENT_MGR] ${agent.id} created for: "${goal.slice(0, 60)}"`)
+  console.log(`[AGENT_MGR] ${agent.id} created for: "${goal.slice(0, 60)}"${goalId ? ` (goal=${goalId})` : ''}`)
   return agent
 }
 
 export async function executeAgent(agentId: string): Promise<SubAgent> {
   const agent = agentStore.get(agentId)
   if (!agent) throw new Error(`[AGENT_MGR] agent not found: ${agentId}`)
+
+  // Acquire lease for linked world goal — prevents duplicate execution
+  if (agent.goalId) {
+    const acquired = acquireLease(agent.goalId, agent.id)
+    if (!acquired) {
+      agent.state = 'failed'
+      log(agent, `failed to acquire lease — goal ${agent.goalId} already locked`)
+      console.warn(`[AGENT_MGR] ${agent.id} aborted — goal ${agent.goalId} locked by another agent`)
+      return agent
+    }
+  }
 
   agent.state     = 'running'
   agent.startedAt = Date.now()
@@ -367,6 +380,9 @@ export async function executeAgent(agentId: string): Promise<SubAgent> {
   const elapsed = agent.completedAt - agent.startedAt!
   log(agent, `${agent.state} — ${succeeded}/${agent.plan.length} steps succeeded in ${elapsed}ms`)
   console.log(`[AGENT_MGR] ${agent.id} ${agent.state} (${succeeded}/${agent.plan.length} steps, ${elapsed}ms)`)
+
+  // Release lease regardless of outcome
+  if (agent.goalId) releaseLease(agent.goalId, agent.id)
 
   return agent
 }
