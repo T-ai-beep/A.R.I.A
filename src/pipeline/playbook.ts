@@ -81,7 +81,7 @@ function logPlayFire(fire: PlayFire) {
   ensureDir()
   try {
     fs.appendFileSync(PLAYS_FILE, JSON.stringify(fire) + '\n')
-  } catch {}
+  } catch (e) { console.error('[PLAYBOOK] logPlayFire failed:', e) }
 }
 
 // ── Escalation tier tracking ───────────────────────────────────────────────
@@ -738,7 +738,7 @@ const FORCED_FALLBACKS: Partial<Record<EventType, string>> = {
   PRICE_OBJECTION: 'What part of the price concerns you most?',
   AGREEMENT:       'Good. Who signs and what is the timeline?',
   COMPETITOR:      'What is the one thing your current system does not handle?',
-  AUTHORITY:       'Who is the final decision maker and can we get them on a call?',
+  AUTHORITY:       'Who decides — can we get them on a call?',
   OFFER_DISCUSS:   'What would make this number feel right to you?',
   DEADLINE:        'What needs to happen before that date?',
 }
@@ -761,5 +761,23 @@ export function getPlayStats(): Record<string, { fires: number; tiers: number[] 
       stats[fire.key].tiers.push(fire.tier)
     }
     return stats
-  } catch { return {} }
+  } catch (e) { console.error('[PLAYBOOK] getPlayStats failed:', e); return {} }
+}
+
+// ── Retention: prune plays older than maxAgeDays ──────────────────────────
+
+export function pruneOldPlays(maxAgeDays = 30): void {
+  if (!fs.existsSync(PLAYS_FILE)) return
+  try {
+    const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000
+    const lines = fs.readFileSync(PLAYS_FILE, 'utf-8').trim().split('\n').filter(Boolean)
+    const kept = lines.filter(l => {
+      try { return (JSON.parse(l) as PlayFire).ts > cutoff }
+      catch { return false }
+    })
+    if (kept.length < lines.length) {
+      fs.writeFileSync(PLAYS_FILE, kept.join('\n') + (kept.length ? '\n' : ''))
+      console.log(`[PLAYBOOK] pruned ${lines.length - kept.length} old play records`)
+    }
+  } catch (e) { console.error('[PLAYBOOK] pruneOldPlays failed:', e) }
 }

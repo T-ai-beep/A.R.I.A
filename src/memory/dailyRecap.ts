@@ -243,7 +243,7 @@ Be specific. Use names, dollar amounts, and intents from the data. No preamble. 
           { role: 'user', content: prompt },
         ],
       }),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(CONFIG.OLLAMA_RECAP_TIMEOUT_MS),
     })
     const data  = await res.json() as { message: { content: string } }
     const raw   = data.message.content.trim().replace(/```json|```/g, '').trim()
@@ -330,7 +330,7 @@ function saveRecap(recap: DailyRecap): void {
   try {
     if (!fs.existsSync(ARIA_DIR)) fs.mkdirSync(ARIA_DIR, { recursive: true })
     fs.appendFileSync(RECAPS_FILE, JSON.stringify(recap) + '\n')
-  } catch {}
+  } catch (e) { console.error('[RECAP] saveRecap failed:', e) }
 }
 
 export function loadRecaps(limit = 30): DailyRecap[] {
@@ -341,7 +341,7 @@ export function loadRecaps(limit = 30): DailyRecap[] {
       .map(l => JSON.parse(l) as DailyRecap)
       .slice(-limit)
       .reverse()
-  } catch { return [] }
+  } catch (e) { console.error('[RECAP] loadRecaps parse failed:', e); return [] }
 }
 
 export function getRecapForDate(date: string): DailyRecap | null {

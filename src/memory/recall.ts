@@ -291,7 +291,7 @@ async function summarizeRecallResults(
           },
         ],
       }),
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(CONFIG.OLLAMA_RECALL_TIMEOUT_MS),
     })
     const data = await res.json() as { message: { content: string } }
     return data.message.content.trim()

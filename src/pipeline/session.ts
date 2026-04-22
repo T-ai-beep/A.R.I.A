@@ -28,11 +28,11 @@ import { clearMemory, getContext, getRecentTranscripts } from './memory.js'
 import { storeEpisode } from './epsodic.js'
 import { saveToHistory } from './rag.js'
 
-// ── Config ──────────────────────────────────────────────────────────────────
+// ── Config (sourced from central CONFIG) ────────────────────────────────────
 
-const SESSION_END_SILENCE_MS = 2 * 60 * 1000   // 2 min silence = new session
-const MIN_SESSION_TURNS      = 2                 // don't summarize 1-turn sessions
-const MAX_SUMMARY_CHARS      = 500
+const SESSION_END_SILENCE_MS = CONFIG.SESSION_END_SILENCE_MS
+const MIN_SESSION_TURNS      = CONFIG.MIN_SESSION_TURNS
+const MAX_SUMMARY_CHARS      = CONFIG.MAX_SUMMARY_CHARS
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -205,7 +205,7 @@ Be concrete. Use names if present. Include dollar amounts if relevant.`,
           ],
           stream: false,
         }),
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(CONFIG.OLLAMA_SUMMARY_TIMEOUT_MS),
       })
 
       const data = await res.json() as { message: { content: string } }

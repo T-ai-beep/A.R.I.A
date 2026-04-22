@@ -121,17 +121,19 @@ async function embed(text: string): Promise<number[]> {
     return cached
   }
 
-  const res = await fetch(`${CONFIG.OLLAMA_URL.replace('/api/chat', '/api/embed')}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'nomic-embed-text', input: text }),
-  })
-  const data = await res.json() as { embeddings: number[][] }
-  const vec = data.embeddings[0]
-
-  // Store in cache for future hits
-  setCachedEmbed(text, vec)
-  return vec
+  try {
+    const res = await fetch(`${CONFIG.OLLAMA_URL.replace('/api/chat', '/api/embed')}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'nomic-embed-text', input: text }),
+    })
+    const data = await res.json() as { embeddings: number[][] }
+    const vec = data.embeddings[0]
+    setCachedEmbed(text, vec)
+    return vec
+  } catch {
+    return []
+  }
 }
 
 function cosine(a: number[], b: number[]): number {
@@ -141,6 +143,7 @@ function cosine(a: number[], b: number[]): number {
     normA += a[i] * a[i]
     normB += b[i] * b[i]
   }
+  if (normA === 0 || normB === 0) return 0
   return dot / (Math.sqrt(normA) * Math.sqrt(normB))
 }
 
@@ -149,12 +152,22 @@ let warmedUp = false
 export async function warmupEmbeddings(): Promise<void> {
   if (warmedUp) return
   console.log('[EMBED] warming up...')
-  for (const ex of EXAMPLES) {
-    ex.embedding = await embed(ex.text)
+  const BATCH = 10
+  let ollamaDown = false
+  for (let i = 0; i < EXAMPLES.length; i += BATCH) {
+    if (ollamaDown) break
+    const slice = EXAMPLES.slice(i, i + BATCH)
+    const vecs = await Promise.all(slice.map(ex => embed(ex.text)))
+    if (vecs[0].length === 0) { ollamaDown = true; break }
+    slice.forEach((ex, j) => { ex.embedding = vecs[j] })
   }
   warmedUp = true
   const stats = getCacheStats()
-  console.log(`[EMBED] ready — ${EXAMPLES.length} examples loaded — cache ${stats.size}/${stats.capacity}`)
+  if (ollamaDown) {
+    console.warn('[EMBED] Ollama unavailable — embeddings skipped (semantic matching disabled)')
+  } else {
+    console.log(`[EMBED] ready — ${EXAMPLES.length} examples loaded — cache ${stats.size}/${stats.capacity}`)
+  }
 }
 
 export async function matchEmbedding(

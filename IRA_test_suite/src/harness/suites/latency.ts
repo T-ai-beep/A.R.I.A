@@ -31,7 +31,7 @@ const T = {
   EMBED_MISS_P90:   55,
   TTS_TTFC_P90:     120,
   TOTAL_FAST_P90:   300,  // CRITICAL threshold
-  TOTAL_SLOW_P90:   700,
+  TOTAL_SLOW_P90:   500,
   TOTAL_FAST_P99:   450,
 }
 
@@ -50,6 +50,9 @@ function pStats(values: number[]) {
 
 async function measureRules(transcript: string, mode: string, trials = 50): Promise<number[]> {
   const { matchRule } = await import("../../../../src/pipeline/rules.js")
+  // Warmup: ensure JIT compilation is complete before timing
+  matchRule(transcript, mode as any)
+  matchRule(transcript, mode as any)
   return Promise.all(
     Array.from({ length: trials }, async () => {
       const t0 = performance.now()
@@ -328,6 +331,45 @@ async function testConcurrentCalls(): Promise<void> {
   )
 }
 
+// ── LAT-004-slow: Full slow-path pipeline (LLM) ───────────────────────────
+// Transcripts chosen to miss rules, playbook, and embedding — forcing LLM.
+
+async function testSlowPathLatency(): Promise<void> {
+  const { decide, setMode } = await import("../../../../src/pipeline/decision.js")
+  const { resetTiers } = await import("../../../../src/pipeline/playbook.js")
+
+  setMode('negotiation')
+
+  const slowCases = [
+    "what is our discount policy for enterprise customers in q4",
+    "can you summarize the key risks in our current proposal",
+    "how should i handle this objection about integration complexity",
+  ]
+
+  const allMs: number[] = []
+
+  for (const text of slowCases) {
+    const runs: number[] = []
+    for (let i = 0; i < 5; i++) {
+      resetTiers()
+      const { ms } = await timed(() => decide(text))
+      runs.push(ms)
+    }
+    const s = pStats(runs)
+    allMs.push(...runs)
+
+    record(
+      SUITE, 'LAT-004-slow', `Slow-path (LLM) P90 ≤ ${T.TOTAL_SLOW_P90}ms`,
+      'HIGH', s.p90 <= T.TOTAL_SLOW_P90 ? 'PASS' : 'FAIL',
+      `P90 ≤ ${T.TOTAL_SLOW_P90}ms`,
+      `P90=${s.p90.toFixed(0)}ms P50=${s.p50.toFixed(0)}ms P99=${s.p99.toFixed(0)}ms`,
+      `"${text.slice(0, 50)}"`,
+      s.p90,
+      { p50: s.p50, p90: s.p90, p99: s.p99, totalToAudio: s.p90 }
+    )
+  }
+}
+
 // ── LAT-008: Repeated identical transcript (cache saturation) ─────────────
 
 async function testCacheRepeat(): Promise<void> {
@@ -367,6 +409,7 @@ export async function run(): Promise<void> {
   await testPlaybookLatency()
   await testEmbedLatency()
   await testFastPathLatency()
+  await testSlowPathLatency()
   await testColdStart()
   await testCPUContention()
   await testConcurrentCalls()

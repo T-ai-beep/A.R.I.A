@@ -4,8 +4,18 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "npx tsx src/index.ts"
+    "test": "npx tsx IRA_test_suite/src/harness/runner.ts --suite=all",
+    "test:latency": "npx tsx IRA_test_suite/src/harness/runner.ts --suite=latency",
+    "test:accuracy": "npx tsx IRA_test_suite/src/harness/runner.ts --suite=accuracy",
+    "test:edge": "npx tsx IRA_test_suite/src/harness/runner.ts --suite=edge",
+    "test:memory": "npx tsx IRA_test_suite/src/harness/runner.ts --suite=memory",
+    "test:failure": "npx tsx IRA_test_suite/src/harness/runner.ts --suite=failure",
+    "test:coach": "npx tsx IRA_test_suite/src/harness/runner.ts --suite=coach",
+    "bench": "npx tsx src/bench.ts",
+    "start": "npx tsx src/index.ts",
+    "test:coordinator": "npx tsx src/agents/tests/coordinator.test.ts",
+    "test:hardening": "npx tsx src/agents/tests/hardening.test.ts",
+    "test:crash": "npx tsx src/agents/tests/crash_simulation.test.ts"
   },
   "keywords": [],
   "author": "",
@@ -17,6 +27,6 @@
     "typescript": "^6.0.2"
   },
   "devDependencies": {
-    "@types/node": "^25.5.0"
+    "@types/node": "^25.6.0"
   }
 }

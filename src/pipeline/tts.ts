@@ -24,16 +24,24 @@ const __dirname  = path.dirname(__filename)
 // Resolves to A.R.I.A/scripts/tts.py regardless of working directory
 const SCRIPT = path.resolve(__dirname, '..', '..', 'scripts', 'tts.py')
 
-let proc: ReturnType<typeof spawn> | null = null
+type ProcLike = {
+  stdin: { write: (data: string, cb?: (e: Error | null | undefined) => void) => void } | null
+  killed: boolean
+}
 
-process.on('uncaughtException', (err: any) => {
+let proc: ReturnType<typeof spawn> | null = null
+let spawnFailed = false
+
+const NOP_PROC: ProcLike = { stdin: { write: () => {} }, killed: false }
+
+process.on('uncaughtException', (err: NodeJS.ErrnoException) => {
   if (err.code === 'EPIPE') return  // TTS pipe broken — ignore in test env
   throw err
 })
 
-function getProc() {
-  if (process.env.NODE_ENV === 'test' || process.env.NO_TTS === '1') {
-    return { stdin: { write: () => {} }, killed: false } as any
+function getProc(): ProcLike {
+  if (process.env.NODE_ENV === 'test' || process.env.NO_TTS === '1' || spawnFailed) {
+    return NOP_PROC
   }
   if (proc && !proc.killed) return proc
 
@@ -51,6 +59,12 @@ function getProc() {
     // Forward TTS process stdout logs (TTFC timing etc)
     const msg = d.toString().trim()
     if (msg) console.log(msg)
+  })
+
+  proc.on('error', (err) => {
+    console.error('[TTS] spawn error (TTS disabled):', err.message)
+    spawnFailed = true
+    proc = null
   })
 
   proc.on('exit', (code) => {
@@ -80,11 +94,11 @@ export function speak(text: string): void {
 
   const payload = JSON.stringify({ text: text.trim() }) + '\n'
   try {
-    p.stdin?.write(payload, (err: NodeJS.ErrnoException | null) => {
+    p.stdin?.write(payload, (err) => {
       if (err) console.log(`[TTS] write error (no-op in test): ${err.message}`)
     })
     console.log(`[TTS] ${Date.now() - t0}ms queued — "${text.slice(0, 60)}"`)
-  } catch (err: any) {
+  } catch {
     console.log(`[TTS] skipped (pipe unavailable): "${text.slice(0, 40)}"`)
   }
 }

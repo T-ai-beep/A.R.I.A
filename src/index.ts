@@ -35,13 +35,21 @@ async function init() {
   const { transcribe }        = await import('./audio/whisper.js')
   const { decide, setMode, getTaskContext, getPeopleContext, getFollowUpContext, getTrajectoryContext, getEpisodicContext, getIdentityContext }
                               = await import('./pipeline/decision.js')
+  const { AXONCore }          = await import('./agents/AXONCore.js')
+  const { Coordinator }       = await import('./agents/Coordinator.js')
+  const { ConversationAgent } = await import('./agents/ConversationAgent.js')
+  const { TaskAgent }         = await import('./agents/TaskAgent.js')
+  const { ResearchAgent }     = await import('./agents/ResearchAgent.js')
+  type AxonInput              = import('./agents/types.js').Input
   const { warmupEmbeddings }  = await import('./pipeline/embeddings.js')
   const { speak }             = await import('./pipeline/tts.js')
   const { clearMemory, getContext, getLastTurn } = await import('./pipeline/memory.js')
   const { loadKnowledgeBase, ragQuery, saveToHistory } = await import('./pipeline/rag.js')
   const { getDueItems, getForcedItems, fireItem } = await import('./pipeline/pressure.js')
+  const { pruneOldPlays } = await import('./pipeline/playbook.js')
   const { getSessionManager } = await import('./pipeline/session.js')
-  const { VAD, SpeechEndPayload, SpeechChunkPayload } = await import('./audio/vad.js') as any
+  type SessionSummary = import('./pipeline/session.js').SessionSummary
+  const { VAD } = await import('./audio/vad.js')
 
   type Mode = 'negotiation' | 'meeting' | 'interview' | 'social'
 
@@ -61,12 +69,15 @@ async function init() {
       ? `Last offer: $${ctx.lastOffer}. Last intent: ${ctx.lastIntent}.`
       : ctx.lastIntent ? `Last intent: ${ctx.lastIntent}.` : ''
 
-    const ragContext    = await ragQuery(transcript, { useWeb: true, useHistory: true, useKB: true })
-    const ragLine       = ragContext ? `\n\nContext:\n${ragContext}` : ''
-    const sessionCtx    = sessionMgr.getSessionContext()
-    const leverageLine  = [
+    const [ragContext, episodic] = await Promise.all([
+      ragQuery(transcript, { useWeb: true, useHistory: true, useKB: true }),
+      getEpisodicContext(transcript),
+    ])
+    const ragLine      = ragContext ? `\n\nContext:\n${ragContext}` : ''
+    const sessionCtx   = sessionMgr.getSessionContext()
+    const leverageLine = [
       getTaskContext(), getFollowUpContext(), getPeopleContext(transcript),
-      getTrajectoryContext(), await getEpisodicContext(transcript),
+      getTrajectoryContext(), episodic,
       getIdentityContext(transcript), sessionCtx,
     ].filter(Boolean).join('\n\n')
 
@@ -92,6 +103,7 @@ ${memLine}${ragLine}${leverageLine ? '\n\n' + leverageLine : ''}`
           ],
           stream: true,
         }),
+        signal: AbortSignal.timeout(CONFIG.OLLAMA_STREAM_TIMEOUT_MS),
       })
 
       if (!res.body) throw new Error('no body')
@@ -164,18 +176,25 @@ ${memLine}${ragLine}${leverageLine ? '\n\n' + leverageLine : ''}`
     }, PRESSURE_POLL_MS)
   }
 
-  // ── Warmup ────────────────────────────────────────────────────────────────
-  console.log('[INIT] warming up whisper...')
-  await transcribe(Buffer.alloc(CONFIG.SAMPLE_RATE * 2))
-  console.log('[INIT] whisper ready')
+  // ── Startup maintenance ───────────────────────────────────────────────────
+  pruneOldPlays(CONFIG.PLAYS_RETENTION_DAYS)
 
-  console.log('[INIT] warming up embeddings...')
-  await warmupEmbeddings()
-  console.log('[INIT] embeddings ready')
+  // ── Warmup (parallel) ────────────────────────────────────────────────────
+  console.log('[INIT] warming up whisper, embeddings, and knowledge base in parallel...')
+  await Promise.all([
+    transcribe(Buffer.alloc(CONFIG.SAMPLE_RATE * 2)),
+    warmupEmbeddings(),
+    loadKnowledgeBase(),
+  ])
+  console.log('[INIT] all systems ready')
 
-  console.log('[INIT] loading knowledge base...')
-  await loadKnowledgeBase()
-  console.log('[INIT] RAG ready')
+  // ── Agent orchestration setup ─────────────────────────────────────────────
+  // All execution flows: AXONCore → Coordinator → ExecutionAgent → tool
+  const axon = AXONCore.getInstance()
+  axon.registerAgent(new ResearchAgent())
+  axon.registerAgent(new TaskAgent())
+  axon.registerAgent(Coordinator.getInstance())
+  axon.registerAgent(new ConversationAgent())
 
   speak('online')
 
@@ -252,29 +271,44 @@ ${memLine}${ragLine}${leverageLine ? '\n\n' + leverageLine : ''}`
         return
       }
 
-      // Passive mode: decision pipeline
-      const decision = await decide(transcript)
-
-      if (!decision) {
-        const last = getLastTurn()
-        if (last?.intent === 'QUESTION') {
-          console.log('[QUESTION] routing to ariaRespond')
-          await ariaRespond(transcript)
-        }
-        return
+      // Passive mode: route through AXONCore
+      const axonInput: AxonInput = {
+        id:      `inp_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+        source:  'transcript',
+        text:    transcript,
+        ts:      Date.now(),
+        speaker,
       }
 
-      if (decision === 'ARIA_QUERY') {
+      const result = await AXONCore.getInstance().route(axonInput)
+
+      // ConversationAgent: decide() already called speak() internally — do NOT re-speak
+      // All other agents: speak their output if present
+      if (result.output && result.agentId !== 'conversation') {
+        const enforced = enforceOutput(result.output)
+        if (enforced) {
+          speak(enforced)
+          emitARSignal('RED', enforced)
+          saveToHistory({ ts: Date.now(), transcript, intent: null, response: enforced })
+        }
+      }
+
+      // Preserve ARIA_QUERY sentinel from ConversationAgent
+      if (result.output === 'ARIA_QUERY') {
         activateAria()
         await ariaRespond(transcript)
         deactivateAria()
         return
       }
 
-      const enforced = enforceOutput(decision)
-      console.log(`[FIRE] "${enforced}"`)
-      emitARSignal('RED', enforced)
-      saveToHistory({ ts: Date.now(), transcript, intent: null, response: enforced })
+      // Preserve QUESTION fallback for null decisions from ConversationAgent
+      if (!result.output && result.agentId === 'conversation') {
+        const last = getLastTurn()
+        if (last?.intent === 'QUESTION') {
+          console.log('[QUESTION] routing to ariaRespond')
+          await ariaRespond(transcript)
+        }
+      }
 
     } catch (err) {
       console.error(`[ERROR] ${label}`, err)
@@ -328,7 +362,7 @@ ${memLine}${ragLine}${leverageLine ? '\n\n' + leverageLine : ''}`
     emitARSignal('GREEN', `session started`)
   })
 
-  sessionMgr.on('sessionEnd', (summary: any) => {
+  sessionMgr.on('sessionEnd', (summary: SessionSummary) => {
     console.log(`\n[SESSION] ■ conversation ended`)
     console.log(`  Duration: ${Math.round(summary.durationMs / 1000)}s`)
     console.log(`  Outcome:  ${summary.outcome}`)

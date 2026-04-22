@@ -90,11 +90,11 @@ async function embed(text: string): Promise<number[]> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: 'nomic-embed-text', input: text }),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(CONFIG.OLLAMA_EMBED_TIMEOUT_MS),
     })
     const data = await res.json() as { embeddings: number[][] }
     return data.embeddings[0] ?? []
-  } catch { return [] }
+  } catch (e) { console.error('[EPISODIC] embed fetch failed:', e); return [] }
 }
 
 function cosine(a: number[], b: number[]): number {
@@ -103,6 +103,7 @@ function cosine(a: number[], b: number[]): number {
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]
   }
+  if (na === 0 || nb === 0) return 0
   return dot / (Math.sqrt(na) * Math.sqrt(nb))
 }
 

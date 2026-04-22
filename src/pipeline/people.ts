@@ -33,7 +33,7 @@ function loadAll(): Map<string, PersonRecord> {
         const r = JSON.parse(l) as PersonRecord
         map.set(r.name, r)
       })
-  } catch {}
+  } catch (e) { console.error('[PEOPLE] loadAll parse failed:', e) }
   return map
 }
 

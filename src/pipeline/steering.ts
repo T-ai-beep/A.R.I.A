@@ -125,7 +125,7 @@ No other text.`,
         ],
         stream: false,
       }),
-      signal: AbortSignal.timeout(4000),
+      signal: AbortSignal.timeout(CONFIG.OLLAMA_STEERING_TIMEOUT_MS),
     })
     const data = await res.json() as { message: { content: string } }
     const raw = data.message.content.trim().replace(/```json|```/g, '').trim()

@@ -225,13 +225,14 @@ async function main(): Promise<void> {
 
   // Import and run suites
   const suiteMap: Record<string, () => Promise<void>> = {
-    latency:  () => import('./suites/latency.js').then(m => m.run()),
-    accuracy: () => import('./suites/accuracy.js').then(m => m.run()),
-    edge:     () => import('./suites/edge.js').then(m => m.run()),
-    memory:   () => import('./suites/memory.js').then(m => m.run()),
-    streaming:() => import('./suites/streaming.js').then(m => m.run()),
-    failure:  () => import('./suites/failure.js').then(m => m.run()),
-    scenarios:() => import('./suites/scenarios.js').then(m => m.run()),
+    latency:     () => import('./suites/latency.js').then(m => m.run()),
+    accuracy:    () => import('./suites/accuracy.js').then(m => m.run()),
+    edge:        () => import('./suites/edge.js').then(m => m.run()),
+    memory:      () => import('./suites/memory.js').then(m => m.run()),
+    streaming:   () => import('./suites/streaming.js').then(m => m.run()),
+    failure:     () => import('./suites/failure.js').then(m => m.run()),
+    scenarios:   () => import('./suites/scenarios.js').then(m => m.run()),
+    adversarial: () => import('./suites/adversarial.js').then(m => m.run()),
   }
 
   const toRun = suiteArg === 'all' ? Object.keys(suiteMap) : [suiteArg]

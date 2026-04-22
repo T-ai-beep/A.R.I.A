@@ -99,7 +99,8 @@ function loadIndex(): CaptureIndex {
   }
   try {
     return JSON.parse(fs.readFileSync(INDEX_FILE, 'utf-8')) as CaptureIndex
-  } catch {
+  } catch (e) {
+    console.error('[CAPTURE] loadIndex parse failed:', e)
     return {
       totalEntries: 0,
       totalWords:   0,
@@ -210,7 +211,7 @@ export function markProcessed(id: string): void {
     if (fs.existsSync(statusFile)) {
       statuses = JSON.parse(fs.readFileSync(statusFile, 'utf-8'))
     }
-  } catch {}
+  } catch (e) { console.error('[CAPTURE] load statuses failed:', e) }
   statuses[id] = 'processed'
   fs.writeFileSync(statusFile, JSON.stringify(statuses))
 }

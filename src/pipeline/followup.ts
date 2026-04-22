@@ -40,7 +40,7 @@ function loadAll(): FollowUp[] {
     return fs.readFileSync(FOLLOWUPS_FILE, 'utf-8')
       .trim().split('\n').filter(Boolean)
       .map(l => JSON.parse(l) as FollowUp)
-  } catch { return [] }
+  } catch (e) { console.error('[FOLLOWUP] loadAll failed:', e); return [] }
 }
 
 function saveAll(items: FollowUp[]) {
@@ -108,7 +108,7 @@ const SIGNALS: FollowUpSignal[] = [
   { pattern: /(?:not my (?:call|decision)|have to ask)/i,
     action: 'Follow up — decision pending', delayHours: 72, priority: 'cold' },
   { pattern: /(?:send|forward|email)\s+(?:me|us|over)?\s*(?:the\s+)?(?:contract|proposal|agreement)/i,
-  action: 'Follow up — send contract', delayHours: 1, priority: 'hot' },
+    action: 'Follow up — send contract', delayHours: 1, priority: 'hot' },
 ]
 
 // ── Extract person ─────────────────────────────────────────────────────────
@@ -156,14 +156,15 @@ Generate the draft.`,
         ],
         stream: false,
       }),
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(CONFIG.OLLAMA_DRAFT_TIMEOUT_MS),
     })
 
     const data = await res.json() as { message: { content: string } }
     const raw = data.message.content.trim().replace(/```json|```/g, '').trim()
     const parsed = JSON.parse(raw) as FollowUpDraft
     return parsed
-  } catch {
+  } catch (e) {
+    console.error('[FOLLOWUP] generateDraft failed, using template fallback:', e)
     // fallback — basic template
     const name = person ?? 'there'
     return {
@@ -183,8 +184,9 @@ export interface DetectedFollowUp {
 }
 
 export function detectFollowUp(transcript: string): DetectedFollowUp | null {
+  const t = transcript.slice(0, CONFIG.MAX_TRANSCRIPT_CHARS)
   for (const signal of SIGNALS) {
-    if (signal.pattern.test(transcript)) {
+    if (signal.pattern.test(t)) {
       return {
         action: signal.action,
         delayHours: signal.delayHours,

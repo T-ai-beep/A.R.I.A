@@ -180,7 +180,9 @@ export class BrainMap {
     const queue:   Array<{ id: string; path: string[] }> = [{ id: from, path: [from] }]
 
     while (queue.length) {
-      const { id, path } = queue.shift()!
+      const item = queue.shift()
+      if (!item) break
+      const { id, path } = item
       const neighbors = this.adjacency.get(id) ?? new Set()
 
       for (const neighbor of neighbors) {
@@ -206,7 +208,9 @@ export class BrainMap {
     const result: GraphNode[] = []
 
     while (queue.length) {
-      const { id, hops } = queue.shift()!
+      const item = queue.shift()
+      if (!item) break
+      const { id, hops } = item
       const node = this.nodes.get(id)
       if (node) result.push(node)
       if (hops >= maxHops) continue

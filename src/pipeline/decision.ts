@@ -61,55 +61,61 @@ export function getMode(): Mode {
   return currentMode
 }
 
+// ── Event classification — compiled regexes (module-level, allocated once) ──
+
+const RE_PRICE_OBJECTION = [
+  /can't afford|too expensive|too much|no budget|price is|can't spend/i,
+  /fifteen hundred.*too|upfront.*too|valuation.*high|switching cost/i,
+  /that is a lot\b|that's a lot\b|a lot for.*company|a lot for.*(size|operation)/i,
+  /was not expecting that number|sticker shock|feels like a stretch/i,
+  /not sure.*get that value|not sure.*would get.*value/i,
+  /fifteen hundred bucks is a lot|lot for us man|feels like too much/i,
+]
+const RE_AUTHORITY = [
+  /check with|my team|my boss|need approval|not my call|run it by/i,
+  /my wife|my husband|my business partner|she handles|he handles/i,
+  /partner.*weigh in|our team would need to align|team.*align on/i,
+]
+const RE_COMPETITOR = [
+  /already use|currently use|we have|service.?titan|jobber|housecall/i,
+  /competitor|went with|signed with|chose.*instead/i,
+  /signed the paperwork with them|already signed with/i,
+  /happy with.*current/i,
+]
+const RE_AGREEMENT = [
+  /sounds good|we're in|let's do it|i'll take it|deal|move forward/i,
+  /i'm in\b|when do we start|ready to sign|close this week/i,
+  /could really work for us|this could really work/i,
+  /yeah.*i am in|alright.*let's.*do this/i,
+]
+const RE_STALLING = [
+  /need to think|get back|not sure|maybe|not ready/i,
+  /circle back|be in touch|will be in touch/i,
+  /sounds interesting.*we will|this is interesting.*we will/i,
+]
+const RE_QUESTION    = /\?$/
+const RE_OFFER       = /\$|per month|a year|annually|pricing|cost|budget|range of|salary|compensation/i
+const RE_DEADLINE    = /deadline|by friday|by monday|end of week|next week|asap/i
+
 // ── Event classification — single source of truth ─────────────────────────
 // Runs once per transcript. Result feeds coach, memory context, and LLM.
-// Eliminates the duplicate classification between decision.ts and memory.ts.
 
 export function classifyEvent(transcript: string): EventType {
-  const t = transcript.toLowerCase()
+  // Strip non-ASCII (emoji, CJK, etc.) and collapse runs of spaces so
+  // "can't 💸 afford" normalizes to "can't afford" before regex matching
+  const t = transcript.slice(0, CONFIG.MAX_TRANSCRIPT_CHARS)
+    .replace(/[^\x00-\x7F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
 
-  if (
-    /can't afford|too expensive|too much|no budget|price is|can't spend/i.test(t) ||
-    /fifteen hundred.*too|upfront.*too|valuation.*high|switching cost/i.test(t) ||
-    /that is a lot\b|that's a lot\b|a lot for.*company|a lot for.*(size|operation)/i.test(t) ||
-    /was not expecting that number|sticker shock|feels like a stretch/i.test(t) ||
-    /not sure.*get that value|not sure.*would get.*value/i.test(t) ||
-    /fifteen hundred bucks is a lot|lot for us man|feels like too much/i.test(t)
-  ) return 'PRICE_OBJECTION'
-
-  if (
-    /check with|my team|my boss|need approval|not my call|run it by/i.test(t) ||
-    /my wife|my husband|my business partner|she handles|he handles/i.test(t) ||
-    /partner.*weigh in|our team would need to align|team.*align on/i.test(t)
-  ) return 'AUTHORITY'
-
-  if (
-    /already use|currently use|we have|service.?titan|jobber|housecall/i.test(t) ||
-    /competitor|went with|signed with|chose.*instead/i.test(t) ||
-    /signed the paperwork with them|already signed with/i.test(t) ||
-    /happy with.*current/i.test(t)
-  ) return 'COMPETITOR'
-
-  if (
-    /sounds good|we're in|let's do it|i'll take it|deal|move forward/i.test(t) ||
-    /i'm in\b|when do we start|ready to sign|close this week/i.test(t) ||
-    /could really work for us|this could really work/i.test(t) ||
-    /yeah.*i am in|alright.*let's.*do this/i.test(t)
-  ) return 'AGREEMENT'
-
-  if (
-    /need to think|get back|not sure|maybe|not ready/i.test(t) ||
-    /circle back|be in touch|will be in touch/i.test(t) ||
-    /sounds interesting.*we will|this is interesting.*we will/i.test(t)
-  ) return 'STALLING'
-
-  if (/\?$/.test(t.trim())) return 'QUESTION'
-
-  if (
-    /\$|per month|a year|annually|pricing|cost|budget|range of|salary|compensation/i.test(t)
-  ) return 'OFFER_DISCUSS'
-
-  if (/deadline|by friday|by monday|end of week|next week|asap/i.test(t)) return 'DEADLINE'
+  if (RE_PRICE_OBJECTION.some(r => r.test(t))) return 'PRICE_OBJECTION'
+  if (RE_AUTHORITY.some(r => r.test(t)))        return 'AUTHORITY'
+  if (RE_COMPETITOR.some(r => r.test(t)))       return 'COMPETITOR'
+  if (RE_AGREEMENT.some(r => r.test(t)))        return 'AGREEMENT'
+  if (RE_STALLING.some(r => r.test(t)))         return 'STALLING'
+  if (RE_QUESTION.test(t.trim()))               return 'QUESTION'
+  if (RE_OFFER.test(t))                         return 'OFFER_DISCUSS'
+  if (RE_DEADLINE.test(t))                      return 'DEADLINE'
 
   return 'UNKNOWN'
 }
@@ -328,8 +334,21 @@ async function decideNonNegotiation(
 }
 
 // ── decide() — single entry point ─────────────────────────────────────────
+// Serialized via a lock: concurrent calls queue up rather than corrupting the
+// stateful CoachSession singleton. In production speech is serial anyway.
 
-export async function decide(transcript: string): Promise<string | null> {
+let _decideLock: Promise<void> = Promise.resolve()
+
+export function decide(transcript: string): Promise<string | null> {
+  const waitFor = _decideLock
+  let release!: () => void
+  _decideLock = new Promise<void>(r => { release = r })
+  return waitFor
+    .then(() => _decideImpl(transcript))
+    .finally(() => release())
+}
+
+async function _decideImpl(transcript: string): Promise<string | null> {
   if (!transcript || !transcript.trim()) return null
 
   const t0         = Date.now()
