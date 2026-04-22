@@ -80,7 +80,7 @@ function decomposeGoal(goal: string): StepSpec[] {
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 
-function loadPlans(): Plan[] {
+export function loadPlans(): Plan[] {
   try {
     if (!fs.existsSync(PLANS_FILE)) return []
     return JSON.parse(fs.readFileSync(PLANS_FILE, 'utf-8')) as Plan[]
@@ -92,9 +92,16 @@ function loadPlans(): Plan[] {
 function savePlans(plans: Plan[]): void {
   const dir = path.dirname(PLANS_FILE)
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-  // Atomic-ish write: write to tmp then rename
+  // Crash-safe write: fsync data to tmp, then atomic rename
   const tmp = PLANS_FILE + '.tmp'
-  fs.writeFileSync(tmp, JSON.stringify(plans, null, 2), 'utf-8')
+  const buf = Buffer.from(JSON.stringify(plans, null, 2))
+  const fd  = fs.openSync(tmp, 'w')
+  try {
+    fs.writeSync(fd, buf)
+    fs.fsyncSync(fd)
+  } finally {
+    fs.closeSync(fd)
+  }
   fs.renameSync(tmp, PLANS_FILE)
 }
 

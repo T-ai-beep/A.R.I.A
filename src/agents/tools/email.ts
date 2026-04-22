@@ -2,7 +2,8 @@ import * as fs   from 'fs'
 import * as path from 'path'
 import * as os   from 'os'
 import type { Tool, ToolResult } from '../types.js'
-import { assertInNodeContext }   from '../ToolGuard.js'
+import { assertInNodeContext }    from '../ToolGuard.js'
+import { getCached, cacheResult } from '../ToolCache.js'
 
 const ARIA_DIR    = path.join(os.homedir(), '.aria')
 const EMAIL_QUEUE = path.join(ARIA_DIR, 'email_queue.jsonl')
@@ -30,6 +31,7 @@ export const emailSend: Tool = {
 
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
     assertInNodeContext('email.send')
+    const iKey    = typeof input['__idempotencyKey'] === 'string' ? input['__idempotencyKey'] : null
     const to      = typeof input['to']      === 'string' ? input['to']      : ''
     const subject = typeof input['subject'] === 'string' ? input['subject'] : '(no subject)'
     const body    = typeof input['body']    === 'string' ? input['body']    : ''
@@ -37,15 +39,25 @@ export const emailSend: Tool = {
     if (!to)   return { success: false, error: 'to is required' }
     if (!body) return { success: false, error: 'body is required' }
 
+    // ToolCache idempotency check — prevents duplicate emails on retry
+    if (iKey) {
+      const cached = getCached(iKey)
+      if (cached?.success) return cached
+    }
+
     const entry: QueuedEmail = { id: genId(), to, subject, body, ts: Date.now(), status: 'queued' }
 
+    let result: ToolResult
     try {
       ensureDir()
       fs.appendFileSync(EMAIL_QUEUE, JSON.stringify(entry) + '\n')
       console.log(`[EMAIL] queued → ${to} | "${subject}"`)
-      return { success: true, data: { queued: true, id: entry.id } }
+      result = { success: true, data: { queued: true, id: entry.id } }
     } catch (e) {
-      return { success: false, error: e instanceof Error ? e.message : String(e) }
+      result = { success: false, error: e instanceof Error ? e.message : String(e) }
     }
+
+    if (iKey) cacheResult(iKey, 'email.send', result)
+    return result
   },
 }

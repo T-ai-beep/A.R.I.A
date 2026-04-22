@@ -46,18 +46,47 @@ export interface Agent {
 // ── Plan / Coordinator system ─────────────────────────────────────────────────
 
 export interface PlanNode {
-  id:             string
-  goalId:         string
-  step:           string
-  toolName:       string
-  toolInput:      Record<string, unknown>
-  state:          'pending' | 'running' | 'completed' | 'failed'
-  idempotencyKey: string
-  leaseOwner?:    string
-  leaseExpiry?:   number
-  completedAt?:   number
-  result?:        unknown
-  error?:         string
+  id:                  string
+  goalId:              string
+  step:                string
+  toolName:            string
+  toolInput:           Record<string, unknown>
+  state:               'pending' | 'running' | 'completed' | 'failed'
+  idempotencyKey:      string
+  leaseOwner?:         string
+  leaseExpiry?:        number
+  completedAt?:        number
+  result?:             unknown
+  error?:              string
+  executionId?:        string    // unique per attempt — changes on each retry
+  executionStartedAt?: number
+  timeoutMs?:          number    // per-node override; default 30_000
+  expectedOutcome?:    'truthy' | 'has_data' | 'file_exists'
+}
+
+// ── Execution log ─────────────────────────────────────────────────────────────
+
+export type ExecutionLogEvent =
+  | 'node_started'
+  | 'node_completed'
+  | 'node_failed'
+  | 'node_skipped'
+  | 'node_recovered'
+  | 'lease_acquired'
+  | 'lease_released'
+  | 'lease_reclaimed'
+
+export interface ExecutionLogEntry {
+  ts:          number
+  planId:      string
+  nodeId:      string
+  executionId: string
+  event:       ExecutionLogEvent
+  toolName?:   string
+  success?:    boolean
+  error?:      string
+  durationMs?: number
+  pid:         number
 }
 
 export interface Plan {
