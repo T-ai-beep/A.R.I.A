@@ -65,7 +65,7 @@ import { acquireLease, releaseLease, isLeaseHeld, isLeaseExpired, renewLease, ge
   from '../LeaseManager.js'
 import { appendLog, loadLog, replayStateFromLog, verifyPlanConsistency }
   from '../ExecutionLog.js'
-import { getCached, cacheResult, resetMemoryCache, getToolLogsFile }
+import { getCached, commitResult, resetMemoryCache, getToolLogsFile, getStatus }
   from '../ToolCache.js'
 import { createPlan, getPlan, updateNode, loadPlans }
   from '../Planner.js'
@@ -220,27 +220,28 @@ await test('getCached returns null for unknown key', () => {
   assert.equal(result, null)
 })
 
-await test('cacheResult persists successful result', () => {
+await test('commitResult persists successful result — getCached returns it', () => {
   resetMemoryCache()
   const key = uniqueKey()
-  cacheResult(key, 'file.write', { success: true, data: 'hello' })
+  commitResult(key, 'file.write', { success: true, data: 'hello' })
   const cached = getCached(key)
-  assert.ok(cached, 'Cached result must exist')
+  assert.ok(cached, 'Committed result must be retrievable')
   assert.equal(cached!.success, true)
   assert.equal(cached!.data, 'hello')
 })
 
-await test('cacheResult does NOT cache failures', () => {
+await test('commitResult stores failed results — getCached returns them with success=false', () => {
   resetMemoryCache()
   const key = uniqueKey()
-  cacheResult(key, 'file.write', { success: false, error: 'oops' })
+  commitResult(key, 'file.write', { success: false, error: 'oops' })
   const cached = getCached(key)
-  assert.equal(cached, null, 'Failures must not be cached')
+  assert.ok(cached, 'Failed result must be stored so Coordinator can inspect it')
+  assert.equal(cached!.success, false, 'Stored result must reflect failure')
 })
 
 await test('ToolCache survives memory reset — reloads from disk', () => {
   const key = uniqueKey()
-  cacheResult(key, 'email.send', { success: true, data: { id: 'x123' } })
+  commitResult(key, 'email.send', { success: true, data: { id: 'x123' } })
 
   // Wipe in-memory cache
   resetMemoryCache()
@@ -251,18 +252,27 @@ await test('ToolCache survives memory reset — reloads from disk', () => {
   assert.equal((cached!.data as { id: string }).id, 'x123')
 })
 
-await test('Tool uses cached result when __idempotencyKey hits ToolCache', async () => {
-  const key  = uniqueKey()
-  const expected = { success: true, data: { path: '/fake/path', bytes: 99 } }
-  cacheResult(key, 'file.write', expected)
+await test('Coordinator skips execution when ToolCache already has completed result for node key', async () => {
+  const goal = `cache_hit_coord_${uniqueKey()}`
+  const plan = createPlan(goal)
+  const node = plan.nodes[0]
 
+  // Pre-populate ToolCache as if a prior run completed this node
+  commitResult(node.idempotencyKey, node.toolName, { success: true, data: 'precomputed' })
+
+  let toolCalled = false
   const tool = getTool('file.write')!
-  setActiveNode('test_node')
-  const result = await tool.execute({ filename: 'unused.txt', content: 'unused', __idempotencyKey: key })
-  setActiveNode(null)
+  const orig = tool.execute.bind(tool)
+  tool.execute = async (input) => { toolCalled = true; return orig(input) }
 
-  assert.equal(result.success, true)
-  assert.deepEqual(result.data, expected.data, 'Must return cached data without re-running')
+  try {
+    const coordinator = new Coordinator()
+    const result = await coordinator.acceptGoal(goal)
+    assert.ok(!toolCalled, 'Tool must NOT execute when ToolCache already has completed result')
+    assert.ok(result.results.some(r => r.success), 'Result must be success (from cache)')
+  } finally {
+    tool.execute = orig
+  }
 })
 
 // ── 4. Coordinator crash recovery ─────────────────────────────────────────────
@@ -281,7 +291,7 @@ await test('Coordinator recovers "running" node with ToolCache hit → marks com
     leaseExpiry: Date.now() - 1,   // expired
   })
   // But the tool DID run and result is in ToolCache
-  cacheResult(node.idempotencyKey, node.toolName, { success: true, data: 'cached_result' })
+  commitResult(node.idempotencyKey, node.toolName, { success: true, data: 'cached_result' })
 
   // Create a fresh coordinator — recovery happens on first acceptGoal
   const coordinator = new Coordinator()

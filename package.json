@@ -14,7 +14,8 @@
     "bench": "npx tsx src/bench.ts",
     "start": "npx tsx src/index.ts",
     "test:coordinator": "npx tsx src/agents/tests/coordinator.test.ts",
-    "test:hardening": "npx tsx src/agents/tests/hardening.test.ts"
+    "test:hardening": "npx tsx src/agents/tests/hardening.test.ts",
+    "test:crash": "npx tsx src/agents/tests/crash_simulation.test.ts"
   },
   "keywords": [],
   "author": "",

@@ -29,6 +29,15 @@ export function listTools(): Tool[] {
   return Array.from(registry.values())
 }
 
+// Allows tests to inject deterministic tools without modifying production code.
+export function registerTool(tool: Tool): void {
+  registry.set(tool.name, tool)
+}
+
+export function unregisterTool(name: string): void {
+  registry.delete(name)
+}
+
 export {
   browserSearch, browserScrape,
   emailSend,

@@ -1,6 +1,5 @@
 import type { Tool, ToolResult } from '../types.js'
-import { assertInNodeContext }    from '../ToolGuard.js'
-import { getCached, cacheResult } from '../ToolCache.js'
+import { assertInNodeContext } from '../ToolGuard.js'
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
@@ -13,7 +12,6 @@ export const apiCall: Tool = {
 
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
     assertInNodeContext('api.call')
-    const iKey   = typeof input['__idempotencyKey'] === 'string' ? input['__idempotencyKey'] : null
     const url    = typeof input['url']    === 'string' ? input['url']    : ''
     const method = typeof input['method'] === 'string'
       ? (input['method'].toUpperCase() as HttpMethod)
@@ -26,13 +24,6 @@ export const apiCall: Tool = {
     if (!url) return { success: false, error: 'url is required' }
     if (INTERNAL_IP.test(url)) return { success: false, error: 'Internal URLs are not permitted' }
 
-    // ToolCache idempotency check — idempotent for GET; also protects POST from double-fire
-    if (iKey) {
-      const cached = getCached(iKey)
-      if (cached?.success) return cached
-    }
-
-    let result: ToolResult
     try {
       const res = await fetch(url, {
         method,
@@ -45,16 +36,13 @@ export const apiCall: Tool = {
       let data: unknown = text
       try { data = JSON.parse(text) } catch { /* keep as text */ }
 
-      result = {
+      return {
         success: res.ok,
         data,
         error: res.ok ? undefined : `HTTP ${res.status}: ${res.statusText}`,
       }
     } catch (e) {
-      result = { success: false, error: e instanceof Error ? e.message : String(e) }
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
     }
-
-    if (iKey) cacheResult(iKey, 'api.call', result)
-    return result
   },
 }
